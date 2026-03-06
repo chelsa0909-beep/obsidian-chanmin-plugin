@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Plugin, TFile, TFolder, Setting, moment } from 'obsidian';
 import { DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab } from "./settings";
-import { getMdFilesInFolder, uploadFilesToGcs } from "./gcs-uploader";
+import { getUploadableFilesInFolder, uploadFilesToGcs } from "./gcs-uploader";
 import { parseOffice } from 'officeparser';
 import * as kuromoji from 'kuromoji-ko';
 import nlp from 'compromise';
@@ -39,8 +39,11 @@ export default class MyPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
 				if (file instanceof TFile) {
-					// 1. GCS 개별 업로드 메뉴 및 태그 달기 메뉴 (MD 파일만)
-					if (file.extension.toLowerCase() === 'md') {
+					// 1. GCS 개별 업로드 메뉴 및 태그 달기 메뉴 (MD 및 이미지 파일)
+					const isMd = file.extension.toLowerCase() === 'md';
+					const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(file.extension.toLowerCase());
+
+					if (isMd || isImage) {
 						menu.addItem((item) => {
 							item
 								.setTitle('RAG Agent 업로드')
@@ -50,14 +53,16 @@ export default class MyPlugin extends Plugin {
 								});
 						});
 
-						menu.addItem((item) => {
-							item
-								.setTitle('태그 달기')
-								.setIcon('tag')
-								.onClick(() => {
-									new TagInputModal(this.app, file).open();
-								});
-						});
+						if (isMd) {
+							menu.addItem((item) => {
+								item
+									.setTitle('태그 달기')
+									.setIcon('tag')
+									.onClick(() => {
+										new TagInputModal(this.app, file).open();
+									});
+							});
+						}
 					}
 
 					// 2. PPT, 엑셀, 워드, PDF, EML 확장자 검사 및 MD 변환 메뉴
@@ -80,6 +85,16 @@ export default class MyPlugin extends Plugin {
 							.setIcon('file-text')
 							.onClick(async () => {
 								await this.bulkConvertFolder(file);
+							});
+					});
+
+					// 4. 폴더 하위 파일 선택 후 GCS 업로드
+					menu.addItem((item) => {
+						item
+							.setTitle('RAG Agent 업로드 (선택)')
+							.setIcon('upload-cloud')
+							.onClick(async () => {
+								await this.selectAndUploadFolder(file);
 							});
 					});
 				}
@@ -171,13 +186,18 @@ export default class MyPlugin extends Plugin {
 
 		const basePathToRemove = file.parent ? file.parent.path : '';
 
-		// 태그 누락 검사 (YAML Frontmatter만)
-		const cache = this.app.metadataCache.getFileCache(file);
-		const tags = cache?.frontmatter?.tags;
+		// 태그 누락 검사 (MD 파일만)
 		let hasTag = false;
-		if (tags) {
-			if (Array.isArray(tags) && tags.length > 0) hasTag = true;
-			if (typeof tags === 'string' && tags.trim() !== '') hasTag = true;
+		if (file.extension.toLowerCase() === 'md') {
+			const cache = this.app.metadataCache.getFileCache(file);
+			const tags = cache?.frontmatter?.tags;
+			if (tags) {
+				if (Array.isArray(tags) && tags.length > 0) hasTag = true;
+				if (typeof tags === 'string' && tags.trim() !== '') hasTag = true;
+			}
+		} else {
+			// 이미지 등 다른 파일은 태그 검사 스킵
+			hasTag = true;
 		}
 
 		if (!hasTag) {
@@ -210,9 +230,9 @@ export default class MyPlugin extends Plugin {
 		}
 
 		try {
-			const files = getMdFilesInFolder(this.app, gcsFolder);
+			const files = getUploadableFilesInFolder(this.app, gcsFolder);
 			if (files.length === 0) {
-				new Notice(`⚠️ 지정된 폴더에 마크다운 파일이 없습니다.`);
+				new Notice(`⚠️ 지정된 폴더에 마크다운 파일이나 이미지 파일이 없습니다.`);
 				return;
 			}
 			new SelectFilesModal(this.app, files, (selectedFiles) => {
@@ -224,6 +244,45 @@ export default class MyPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`❌ 폴더를 읽는 중 오류가 발생했습니다: ${msg}`);
 		}
+	}
+
+	async selectAndUploadFolder(folder: TFolder) {
+		const { gcsBucket, gcsServiceAccountKey } = this.settings;
+
+		if (!gcsBucket) {
+			new Notice('⚠️ RAG Agent GCS 버킷 이름을 설정해주세요.');
+			return;
+		}
+		if (!gcsServiceAccountKey) {
+			new Notice('⚠️ RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			return;
+		}
+
+		const supportedExtensions = ['md', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+		const files: TFile[] = [];
+		const collectFiles = (f: TFolder) => {
+			for (const child of f.children) {
+				if (child instanceof TFile && supportedExtensions.includes(child.extension.toLowerCase())) {
+					files.push(child);
+				} else if (child instanceof TFolder) {
+					collectFiles(child);
+				}
+			}
+		};
+		collectFiles(folder);
+
+		if (files.length === 0) {
+			new Notice(`⚠️ "${folder.name}" 폴더 내에 업로드 가능한 파일이 없습니다.`);
+			return;
+		}
+
+		const basePathToRemove = folder.parent ? folder.parent.path : '';
+
+		new SelectFilesModal(this.app, files, (selectedFiles) => {
+			if (selectedFiles.length > 0) {
+				this.doActualUpload(selectedFiles, basePathToRemove);
+			}
+		}).open();
 	}
 
 	onunload() {
@@ -926,6 +985,70 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 			finalMarkdown += `**Date:** ${moment(email.date).format('LLLL')}\n`;
 		}
 		finalMarkdown += '\n---\n\n';
+
+		// 이미지 캡처 (Phantom DOM 사용)
+		const phantom = document.body.createDiv();
+		phantom.style.position = 'fixed';
+		phantom.style.left = '-9999px';
+		phantom.style.width = '1024px';
+		phantom.style.padding = '40px';
+		phantom.style.backgroundColor = '#ffffff';
+		phantom.style.color = '#000000';
+
+		try {
+			// 미디어 폴더 생성
+			try {
+				if (!app.vault.getAbstractFileByPath(mediaPath)) {
+					await app.vault.createFolder(mediaPath);
+				}
+			} catch (e) { /* 무시 */ }
+
+			// 이메일 내용 렌더링
+			let htmlContent = `<div style="font-family: sans-serif; line-height: 1.6;">`;
+			htmlContent += `<h1 style="border-bottom: 2px solid #eeeeee; padding-bottom: 10px;">${email.subject || 'No Subject'}</h1>`;
+			htmlContent += `<p><strong>From:</strong> ${email.from?.name || ''} &lt;${email.from?.address || 'Unknown'}&gt;</p>`;
+			if (email.to && email.to.length > 0) {
+				htmlContent += `<p><strong>To:</strong> ${email.to.map(t => `${t.name || ''} &lt;${t.address}&gt;`).join(', ')}</p>`;
+			}
+			if (email.date) {
+				htmlContent += `<p><strong>Date:</strong> ${moment(email.date).format('LLLL')}</p>`;
+			}
+			htmlContent += `<hr style="border: 0; border-top: 1px solid #eeeeee; margin: 20px 0;">`;
+
+			if (email.html) {
+				htmlContent += email.html;
+			} else if (email.text) {
+				htmlContent += `<pre style="white-space: pre-wrap; word-break: break-all;">${email.text}</pre>`;
+			}
+			htmlContent += `</div>`;
+
+			phantom.innerHTML = htmlContent;
+
+			const canvas = await html2canvas(phantom, {
+				width: 1024,
+				scale: 2, // 높은 화질
+				useCORS: true,
+				backgroundColor: '#ffffff'
+			});
+
+			const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+			if (blob) {
+				const screenshotBuf = await blob.arrayBuffer();
+				const screenshotName = `${file.basename}.png`;
+				const screenshotPath = `${mediaPath}/${screenshotName}`;
+
+				// 기존 파일 삭제 후 생성 (혹은 건너뛰기)
+				const existing = app.vault.getAbstractFileByPath(screenshotPath);
+				if (existing) await app.vault.delete(existing);
+				await app.vault.createBinary(screenshotPath, screenshotBuf);
+
+				finalMarkdown = `![[${screenshotPath}]]\n\n` + finalMarkdown;
+			}
+		} catch (e) {
+			console.error('EML Screenshot Capture Error:', e);
+		} finally {
+			phantom.remove();
+		}
 
 		// 본문 내용 (Plain Text 우선, 없으면 HTML에서 텍스트 추출)
 		if (email.text) {

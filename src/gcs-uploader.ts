@@ -190,17 +190,18 @@ export async function uploadFilesToGcs(
     return result;
 }
 
-export function getMdFilesInFolder(app: App, vaultFolderPath: string): TFile[] {
+export function getUploadableFilesInFolder(app: App, vaultFolderPath: string): TFile[] {
     // Get files from the specified vault folder
     const folder = app.vault.getAbstractFileByPath(vaultFolderPath);
     if (!folder || !(folder instanceof TFolder)) {
         throw new Error(`폴더를 찾을 수 없습니다: ${vaultFolderPath}`);
     }
 
+    const supportedExtensions = ['md', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
     const files: TFile[] = [];
     function collectFiles(f: TFolder) {
         for (const child of f.children) {
-            if (child instanceof TFile && child.extension === 'md') {
+            if (child instanceof TFile && supportedExtensions.includes(child.extension.toLowerCase())) {
                 files.push(child);
             } else if (child instanceof TFolder) {
                 collectFiles(child);
