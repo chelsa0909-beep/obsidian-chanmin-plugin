@@ -511,7 +511,7 @@ class ConfirmUploadModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		contentEl.createEl('h2', { text: '⚠️ 태그 누락 확인' });
+		contentEl.createEl('h2', { text: '⚠️ 태그 누락 확인!' });
 
 		const descEl = contentEl.createEl('p', {
 			text: '다음 파일들에 태그(tags)가 설정되어 있지 않습니다. 그래도 업로드하시겠습니까?'
