@@ -13,17 +13,22 @@
 	"keywords": [],
 	"license": "0-BSD",
 	"devDependencies": {
+		"@eslint/js": "9.30.1",
 		"@types/node": "^16.11.6",
 		"esbuild": "0.25.5",
 		"eslint-plugin-obsidianmd": "0.1.9",
 		"globals": "14.0.0",
+		"jiti": "2.6.1",
 		"tslib": "2.4.0",
 		"typescript": "^5.8.3",
-		"typescript-eslint": "8.35.1",
-		"@eslint/js": "9.30.1",
-		"jiti": "2.6.1"
+		"typescript-eslint": "8.35.1"
 	},
 	"dependencies": {
-		"obsidian": "latest"
+		"@jvmr/pptx-to-html": "^1.0.0",
+		"compromise": "^14.15.0",
+		"html2canvas": "^1.4.1",
+		"kuromoji-ko": "^1.0.8",
+		"obsidian": "latest",
+		"officeparser": "^6.0.4"
 	}
 }
