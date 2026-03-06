@@ -29,6 +29,7 @@
 		"html2canvas": "^1.4.1",
 		"kuromoji-ko": "^1.0.8",
 		"obsidian": "latest",
-		"officeparser": "^6.0.4"
+		"officeparser": "^6.0.4",
+		"postal-mime": "^2.7.3"
 	}
 }

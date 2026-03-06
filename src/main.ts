@@ -6,6 +6,7 @@ import * as kuromoji from 'kuromoji-ko';
 import nlp from 'compromise';
 import { pptxToHtml } from '@jvmr/pptx-to-html';
 import html2canvas from 'html2canvas';
+import PostalMime from 'postal-mime';
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
@@ -59,8 +60,8 @@ export default class MyPlugin extends Plugin {
 						});
 					}
 
-					// 2. PPT, 엑셀, 워드, PDF 확장자 검사 및 MD 변환 메뉴
-					const targetExtensions = ['ppt', 'pptx', 'xls', 'xlsx', 'doc', 'docx', 'pdf'];
+					// 2. PPT, 엑셀, 워드, PDF, EML 확장자 검사 및 MD 변환 메뉴
+					const targetExtensions = ['ppt', 'pptx', 'xls', 'xlsx', 'doc', 'docx', 'pdf', 'eml'];
 					if (targetExtensions.includes(file.extension.toLowerCase())) {
 						menu.addItem((item) => {
 							item
@@ -87,7 +88,7 @@ export default class MyPlugin extends Plugin {
 	}
 
 	async bulkConvertFolder(folder: TFolder) {
-		const targetExtensions = ['ppt', 'pptx', 'xls', 'xlsx', 'doc', 'docx', 'pdf'];
+		const targetExtensions = ['ppt', 'pptx', 'xls', 'xlsx', 'doc', 'docx', 'pdf', 'eml'];
 		const filesToConvert: TFile[] = [];
 
 		const findFilesRecursively = (f: TFolder) => {
@@ -881,9 +882,6 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 	// 1. 파일 데이터 가져오기 (ArrayBuffer)
 	const arrayBuffer = await app.vault.readBinary(file);
 
-	// 2. officeparser를 사용해 AST 파싱 (이미지 추출 옵션 켜기)
-	const ast = await parseOffice(arrayBuffer, { extractAttachments: true });
-
 	// 4. 새 파일/폴더 이름 생성 베이스
 	const basePath = file.path.replace(new RegExp(`\\.${file.extension}$`), '');
 	let newPath = `${basePath}.md`;
@@ -899,98 +897,149 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 
 	let finalMarkdown = '';
 
-	// PPT 계열이면 슬라이드 캡처 및 텍스트 추출 수행
-	if (file.extension.toLowerCase().startsWith('ppt')) {
-		// 미디어 폴더 생성
-		try {
-			await app.vault.createFolder(mediaPath);
-		} catch (e) { /* 폴더 기존재 시 무시 */ }
+	// EML 처리 (OfficeParser가 지원하지 않으므로 먼저 처리)
+	if (file.extension.toLowerCase() === 'eml') {
+		const parser = new PostalMime();
+		const email = await parser.parse(arrayBuffer);
 
-		// 1. 슬라이드 이미지 캡처 (Phantom DOM 사용)
-		const phantom = document.body.createDiv();
-		phantom.style.position = 'fixed';
-		phantom.style.left = '-9999px';
-		phantom.style.width = '1280px';
+		// 메타데이터 헤더 (YAML Frontmatter)
+		finalMarkdown = '---\n';
+		finalMarkdown += `subject: "${(email.subject || 'No Subject').replace(/"/g, '\\"')}"\n`;
+		finalMarkdown += `from: "${(email.from?.address || 'Unknown').replace(/"/g, '\\"')}"\n`;
+		if (email.to && email.to.length > 0) {
+			const toStr = email.to.map(t => t.address).join(', ');
+			finalMarkdown += `to: "${toStr.replace(/"/g, '\\"')}"\n`;
+		}
+		if (email.date) {
+			finalMarkdown += `date: ${moment(email.date).format('YYYY-MM-DD HH:mm:ss')}\n`;
+		}
+		finalMarkdown += '---\n\n';
 
-		try {
-			const htmlSlides = await pptxToHtml(arrayBuffer, { width: 1280 });
-			for (let i = 0; i < htmlSlides.length; i++) {
-				phantom.empty();
-				const slideHtml = htmlSlides[i];
-				if (slideHtml) phantom.innerHTML = slideHtml;
+		// 가독성을 위한 헤더 섹션
+		finalMarkdown += `# ${email.subject || 'No Subject'}\n\n`;
+		finalMarkdown += `**From:** ${email.from?.name || ''} <${email.from?.address || 'Unknown'}>\n`;
+		if (email.to && email.to.length > 0) {
+			const toDisplay = email.to.map(t => `${t.name || ''} <${t.address}>`).join(', ');
+			finalMarkdown += `**To:** ${toDisplay}\n`;
+		}
+		if (email.date) {
+			finalMarkdown += `**Date:** ${moment(email.date).format('LLLL')}\n`;
+		}
+		finalMarkdown += '\n---\n\n';
 
-				const canvas = await html2canvas(phantom, {
-					width: 1280,
-					scale: 1,
-					useCORS: true,
-					backgroundColor: '#ffffff'
-				});
-
-				const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
-				if (blob) {
-					const slideBuf = await blob.arrayBuffer();
-					const slideName = `slide_${i + 1}.png`; // 1-indexed
-					const slidePath = `${mediaPath}/${slideName}`;
-					await app.vault.createBinary(slidePath, slideBuf);
-				}
-			}
-		} catch (e) {
-			console.error('Slide Capture Error:', e);
-		} finally {
-			phantom.remove();
+		// 본문 내용 (Plain Text 우선, 없으면 HTML에서 텍스트 추출)
+		if (email.text) {
+			finalMarkdown += email.text;
+		} else if (email.html) {
+			const tempEl = document.createElement('div');
+			tempEl.innerHTML = email.html;
+			finalMarkdown += tempEl.innerText || tempEl.textContent || '';
 		}
 
-		// 2. 기존 이미지 추출
-		if (ast.attachments && ast.attachments.length > 0) {
-			for (const attachment of ast.attachments) {
-				if (attachment.type === 'image') {
-					const binaryString = window.atob(attachment.data);
-					const len = binaryString.length;
-					const bytes = new Uint8Array(len);
-					for (let j = 0; j < len; j++) bytes[j] = binaryString.charCodeAt(j);
-
-					const imageFilePath = `${mediaPath}/${attachment.name}`;
-					try {
-						await app.vault.createBinary(imageFilePath, bytes.buffer);
-					} catch (e) { /* 기존재 무시 */ }
-				}
+		if (email.attachments && email.attachments.length > 0) {
+			finalMarkdown += '\n\n---\n### Attachments\n';
+			for (const att of email.attachments) {
+				const size = att.content instanceof ArrayBuffer ? att.content.byteLength : (att.content as any).length;
+				finalMarkdown += `- ${att.filename} (${(size / 1024).toFixed(1)} KB)\n`;
 			}
 		}
+	} else {
+		// 2. officeparser를 사용해 AST 파싱 (이미지 추출 옵션 켜기)
+		const ast = await parseOffice(arrayBuffer, { extractAttachments: true });
 
-		// 3. 마크다운 생성
-		let currentSlideIndex = 0;
-		const buildMarkdown = (node: any): string => {
-			let md = '';
-			if (node.type === 'slide') {
-				currentSlideIndex++;
-				md += `\n\n![[${mediaPath}/slide_${currentSlideIndex}.png]]\n\n`;
-			}
-			if (node.type === 'image') {
-				const attachmentName = node.metadata?.attachmentName;
-				if (attachmentName) md += `\n\n![[${mediaPath}/${attachmentName}]]\n\n`;
-			} else if (node.text) {
-				md += node.text;
-			}
-			if (node.children && Array.isArray(node.children)) {
-				for (const child of node.children) buildMarkdown(child);
-			}
-			if (node.type === 'slide') {
-				md += '\n\n---\n\n';
-			} else if (node.type === 'paragraph' || node.type === 'heading') {
-				md += '\n';
-			}
-			return md;
-		};
+		// PPT 계열이면 슬라이드 캡처 및 텍스트 추출 수행
+		if (file.extension.toLowerCase().startsWith('ppt')) {
+			// 미디어 폴더 생성
+			try {
+				await app.vault.createFolder(mediaPath);
+			} catch (e) { /* 폴더 기존재 시 무시 */ }
 
-		if (ast.content && Array.isArray(ast.content)) {
-			for (const rootNode of ast.content) {
-				finalMarkdown += buildMarkdown(rootNode);
+			// 1. 슬라이드 이미지 캡처 (Phantom DOM 사용)
+			const phantom = document.body.createDiv();
+			phantom.style.position = 'fixed';
+			phantom.style.left = '-9999px';
+			phantom.style.width = '1280px';
+
+			try {
+				const htmlSlides = await pptxToHtml(arrayBuffer, { width: 1280 });
+				for (let i = 0; i < htmlSlides.length; i++) {
+					phantom.empty();
+					const slideHtml = htmlSlides[i];
+					if (slideHtml) phantom.innerHTML = slideHtml;
+
+					const canvas = await html2canvas(phantom, {
+						width: 1280,
+						scale: 1,
+						useCORS: true,
+						backgroundColor: '#ffffff'
+					});
+
+					const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+					if (blob) {
+						const slideBuf = await blob.arrayBuffer();
+						const slideName = `slide_${i + 1}.png`; // 1-indexed
+						const slidePath = `${mediaPath}/${slideName}`;
+						await app.vault.createBinary(slidePath, slideBuf);
+					}
+				}
+			} catch (e) {
+				console.error('Slide Capture Error:', e);
+			} finally {
+				phantom.remove();
+			}
+
+			// 2. 기존 이미지 추출
+			if (ast.attachments && ast.attachments.length > 0) {
+				for (const attachment of ast.attachments) {
+					if (attachment.type === 'image') {
+						const binaryString = window.atob(attachment.data);
+						const len = binaryString.length;
+						const bytes = new Uint8Array(len);
+						for (let j = 0; j < len; j++) bytes[j] = binaryString.charCodeAt(j);
+
+						const imageFilePath = `${mediaPath}/${attachment.name}`;
+						try {
+							await app.vault.createBinary(imageFilePath, bytes.buffer);
+						} catch (e) { /* 기존재 무시 */ }
+					}
+				}
+			}
+
+			// 3. 마크다운 생성
+			let currentSlideIndex = 0;
+			const buildMarkdown = (node: any): string => {
+				let md = '';
+				if (node.type === 'slide') {
+					currentSlideIndex++;
+					md += `\n\n![[${mediaPath}/slide_${currentSlideIndex}.png]]\n\n`;
+				}
+				if (node.type === 'image') {
+					const attachmentName = node.metadata?.attachmentName;
+					if (attachmentName) md += `\n\n![[${mediaPath}/${attachmentName}]]\n\n`;
+				} else if (node.text) {
+					md += node.text;
+				}
+				if (node.children && Array.isArray(node.children)) {
+					for (const child of node.children) buildMarkdown(child);
+				}
+				if (node.type === 'slide') {
+					md += '\n\n---\n\n';
+				} else if (node.type === 'paragraph' || node.type === 'heading') {
+					md += '\n';
+				}
+				return md;
+			};
+
+			if (ast.content && Array.isArray(ast.content)) {
+				for (const rootNode of ast.content) {
+					finalMarkdown += buildMarkdown(rootNode);
+				}
+			} else {
+				finalMarkdown = ast.toText();
 			}
 		} else {
 			finalMarkdown = ast.toText();
 		}
-	} else {
-		finalMarkdown = ast.toText();
 	}
 
 	// 5. 마크다운 파일 생성
