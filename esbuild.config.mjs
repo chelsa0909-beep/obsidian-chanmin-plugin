@@ -1,6 +1,8 @@
 import esbuild from "esbuild";
 import process from "process";
 import { builtinModules } from 'node:module';
+import fs from "fs";
+import path from "path";
 
 const banner =
 	`/*
@@ -10,6 +12,9 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === "production");
+
+const outfile = "C:\\Users\\chanmin.park\\OneDrive - LG전자\\문서\\Obsidian Vault\\.obsidian\\plugins\\obsidian-chanmin-plugin\\main.js";
+const outdir = path.dirname(outfile);
 
 const context = await esbuild.context({
 	banner: {
@@ -37,8 +42,29 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "C:\\Users\\chanmin.park\\OneDrive - LG전자\\문서\\Obsidian Vault\\.obsidian\\plugins\\obsidian-chanmin-plugin\\main.js",
+	outfile: outfile,
 	minify: prod,
+	plugins: [
+		{
+			name: "copy-manifest",
+			setup(build) {
+				build.onEnd(() => {
+					try {
+						if (!fs.existsSync(outdir)) {
+							fs.mkdirSync(outdir, { recursive: true });
+						}
+						fs.copyFileSync("manifest.json", path.join(outdir, "manifest.json"));
+						if (fs.existsSync("styles.css")) {
+							fs.copyFileSync("styles.css", path.join(outdir, "styles.css"));
+						}
+						console.log("Successfully copied manifest.json and styles.css to " + outdir);
+					} catch (e) {
+						console.error("Failed to copy manifest.json or styles.css", e);
+					}
+				});
+			},
+		},
+	],
 });
 
 if (prod) {
