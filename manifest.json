@@ -1,9 +1,9 @@
 {
 	"id": "obsidian-chanmin-plugin",
-	"name": "RAG Agent File Uploader",
+	"name": "D2C RAG Agent File Uploader",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "RAG Agent에 파일을 전송합니다.",
+	"description": "D2C RAG Agent에 파일을 전송합니다.",
 	"author": "Chanmin Park",
 	"isDesktopOnly": true
 }
