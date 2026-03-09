@@ -16,7 +16,7 @@ export default class MyPlugin extends Plugin {
 
 		// GCS 업로드 리본 아이콘 (사용자 요청으로 제거)
 		/*
-		this.addRibbonIcon('upload-cloud', 'LGE D2C RAG Agent 업로드', async () => {
+		this.addRibbonIcon('upload-cloud', 'RAG Agent 업로드', async () => {
 			await this.runUpload();
 		});
 		*/
@@ -48,7 +48,7 @@ export default class MyPlugin extends Plugin {
 					if (isMd || isImage) {
 						menu.addItem((item) => {
 							item
-								.setTitle('LGE D2C RAG Agent 업로드')
+								.setTitle('RAG Agent 업로드')
 								.setIcon('upload-cloud')
 								.onClick(async () => {
 									await this.uploadSingleFile(file);
@@ -83,7 +83,7 @@ export default class MyPlugin extends Plugin {
 					// 3. 폴더 하위 파일 일괄 MD 변환 메뉴
 					menu.addItem((item) => {
 						item
-							.setTitle('하위 파일 일괄 MD 변환')
+							.setTitle('일괄 MD 파일로변환')
 							.setIcon('file-text')
 							.onClick(async () => {
 								await this.bulkConvertFolder(file);
@@ -93,7 +93,7 @@ export default class MyPlugin extends Plugin {
 					// 4. 폴더 하위 파일 선택 후 GCS 업로드
 					menu.addItem((item) => {
 						item
-							.setTitle('LGE D2C RAG Agent 업로드')
+							.setTitle('RAG Agent 업로드')
 							.setIcon('upload-cloud')
 							.onClick(async () => {
 								await this.selectAndUploadFolder(file);
@@ -103,7 +103,7 @@ export default class MyPlugin extends Plugin {
 					// 5. 파일 선택 → MD 변환 → GCS 업로드
 					menu.addItem((item) => {
 						item
-							.setTitle('MD 변환 및 LGE D2C RAG Agent 업로드')
+							.setTitle('일괄 MD 파일로 변환 후 RAG Agent 업로드')
 							.setIcon('file-up')
 							.onClick(async () => {
 								await this.selectConvertAndUpload(file);
@@ -138,7 +138,7 @@ export default class MyPlugin extends Plugin {
 					// MD 변환 + GCS 업로드
 					menu.addItem((item) => {
 						item
-							.setTitle(`MD 변환 및 GCS 업로드 (${convertableFiles.length}개)`)
+							.setTitle(`MD 변환 및 RAG Agent 업로드 (${convertableFiles.length}개)`)
 							.setIcon('file-up')
 							.onClick(async () => {
 								await this.convertAndUploadFiles(convertableFiles);
@@ -150,7 +150,7 @@ export default class MyPlugin extends Plugin {
 				if (uploadableFiles.length > 0) {
 					menu.addItem((item) => {
 						item
-							.setTitle(`LGE D2C RAG Agent 업로드 (${uploadableFiles.length}개)`)
+							.setTitle(`RAG Agent 업로드 (${uploadableFiles.length}개)`)
 							.setIcon('upload-cloud')
 							.onClick(async () => {
 								await this.uploadMultipleFiles(uploadableFiles);
@@ -609,7 +609,7 @@ class SelectFilesModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		contentEl.createEl('h2', { text: 'LGE D2C RAG Agent 업로드 파일 선택' });
+		contentEl.createEl('h2', { text: 'RAG Agent 업로드 파일 선택' });
 
 		const descEl = contentEl.createEl('p', { text: '업로드할 마크다운 파일을 선택해주세요.' });
 		descEl.style.marginBottom = '10px';
@@ -1190,7 +1190,7 @@ class SelectConvertFilesModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		contentEl.createEl('h2', { text: 'MD 변환 및 GCS 업로드 파일 선택' });
+		contentEl.createEl('h2', { text: 'MD 변환 및 RAG Agent 업로드 파일 선택' });
 
 		const descEl = contentEl.createEl('p', { text: '변환 후 GCS에 업로드할 파일을 선택해주세요.' });
 		descEl.style.marginBottom = '10px';
@@ -1365,10 +1365,10 @@ class GcsFolderSelectModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		contentEl.createEl('h2', { text: 'GCS 업로드 폴더 선택' });
+		contentEl.createEl('h2', { text: 'RAG Agent 업로드 폴더 선택' });
 
 		contentEl.createEl('p', {
-			text: '파일을 업로드할 GCS 폴더를 선택하세요.',
+			text: '파일을 업로드할 LGE D2C RAG Agent 폴더를 선택하세요.',
 			cls: 'setting-item-description'
 		});
 
@@ -1656,8 +1656,13 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 
 		try {
 			// 이메일 내용 렌더링
-			let htmlContent = `<div style="font-family: sans-serif; line-height: 1.6;">`;
-			htmlContent += `<h1 style="border-bottom: 2px solid #eeeeee; padding-bottom: 10px;">${email.subject || 'No Subject'}</h1>`;
+			let htmlContent = `<div style="font-family: sans-serif; line-height: 1.6; word-break: break-all;">`;
+			// 스타일 추가: 이미지가 가로폭을 넘지 않도록 처리
+			htmlContent += `<style>
+				img { max-width: 100% !important; height: auto !important; object-fit: contain; }
+				pre { white-space: pre-wrap; word-break: break-all; }
+			</style>`;
+			htmlContent += `<h1 style="border-bottom: 2px solid #eeeeee; padding-bottom: 10px; margin-top: 0;">${email.subject || 'No Subject'}</h1>`;
 			htmlContent += `<p><strong>From:</strong> ${email.from?.name || ''} &lt;${email.from?.address || 'Unknown'}&gt;</p>`;
 			if (email.to && email.to.length > 0) {
 				htmlContent += `<p><strong>To:</strong> ${email.to.map(t => `${t.name || ''} &lt;${t.address}&gt;`).join(', ')}</p>`;
@@ -1689,17 +1694,18 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 			if (email.html) {
 				htmlContent += processedHtml;
 			} else if (email.text) {
-				htmlContent += `<pre style="white-space: pre-wrap; word-break: break-all;">${email.text}</pre>`;
+				htmlContent += `<pre>${email.text}</pre>`;
 			}
 			htmlContent += `</div>`;
 
 			phantom.innerHTML = htmlContent;
 
+			// 최신 스케일 유지 (사용자가 3으로 조정함)
 			const canvas = await html2canvas(phantom, {
-				width: 1024,
-				scale: 2, // 높은 화질
+				scale: 3,
 				useCORS: true,
-				backgroundColor: '#ffffff'
+				backgroundColor: '#ffffff',
+				logging: false
 			});
 
 			const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -1765,7 +1771,7 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 
 					const canvas = await html2canvas(phantom, {
 						width: 1280,
-						scale: 1,
+						scale: 2, // 화질 개선
 						useCORS: true,
 						backgroundColor: '#ffffff'
 					});
