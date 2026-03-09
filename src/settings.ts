@@ -40,27 +40,27 @@ export class SampleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
-			.setName('업로드할 폴더 경로')
-			.setDesc('옵시디언 Vault 내 업로드할 폴더 경로 (예: Notes/uploads)')
-			.addText(text => text
-				.setPlaceholder('Notes/uploads')
-				.setValue(this.plugin.settings.gcsFolder)
-				.onChange(async (value) => {
-					this.plugin.settings.gcsFolder = value;
-					await this.plugin.saveSettings();
-				}));
+		// new Setting(containerEl)
+		// 	.setName('업로드할 폴더 경로')
+		// 	.setDesc('옵시디언 Vault 내 업로드할 폴더 경로 (예: Notes/uploads)')
+		// 	.addText(text => text
+		// 		.setPlaceholder('Notes/uploads')
+		// 		.setValue(this.plugin.settings.gcsFolder)
+		// 		.onChange(async (value) => {
+		// 			this.plugin.settings.gcsFolder = value;
+		// 			await this.plugin.saveSettings();
+		// 		}));
 
-		new Setting(containerEl)
-			.setName('GCS 대상 경로 프리픽스')
-			.setDesc('GCS 버킷 내 업로드 대상 경로 프리픽스 (선택, 비워두면 루트에 업로드)')
-			.addText(text => text
-				.setPlaceholder('obsidian-backup')
-				.setValue(this.plugin.settings.gcsTargetPrefix)
-				.onChange(async (value) => {
-					this.plugin.settings.gcsTargetPrefix = value;
-					await this.plugin.saveSettings();
-				}));
+		// new Setting(containerEl)
+		// 	.setName('GCS 대상 경로 프리픽스')
+		// 	.setDesc('GCS 버킷 내 업로드 대상 경로 프리픽스 (선택, 비워두면 루트에 업로드)')
+		// 	.addText(text => text
+		// 		.setPlaceholder('obsidian-backup')
+		// 		.setValue(this.plugin.settings.gcsTargetPrefix)
+		// 		.onChange(async (value) => {
+		// 			this.plugin.settings.gcsTargetPrefix = value;
+		// 			await this.plugin.saveSettings();
+		// 		}));
 
 		new Setting(containerEl)
 			.setName('서비스 계정 JSON 키')

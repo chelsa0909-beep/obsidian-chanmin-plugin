@@ -1,7 +1,7 @@
 import { App, TFile, Notice, TFolder, requestUrl } from 'obsidian';
 import * as crypto from 'crypto';
 
-interface ServiceAccountKey {
+export interface ServiceAccountKey {
     type: string;
     project_id: string;
     private_key_id: string;
@@ -51,7 +51,7 @@ function createJwt(serviceAccount: ServiceAccountKey): string {
     return `${signInput}.${base64url(signature)}`;
 }
 
-async function getAccessToken(serviceAccount: ServiceAccountKey): Promise<string> {
+export async function getAccessToken(serviceAccount: ServiceAccountKey): Promise<string> {
     const jwt = createJwt(serviceAccount);
 
     const response = await requestUrl({
@@ -132,7 +132,8 @@ export async function uploadFilesToGcs(
     files: TFile[],
     serviceAccountKeyJson: string,
     gcsPrefix: string,
-    basePathToRemove: string = ''
+    basePathToRemove: string = '',
+    flatUpload: boolean = false
 ): Promise<{ success: number; failed: number; errors: string[] }> {
     // Parse service account key
     let serviceAccount: ServiceAccountKey;
@@ -163,10 +164,16 @@ export async function uploadFilesToGcs(
             const content = await app.vault.readBinary(file);
 
             // Calculate relative path for GCS
-            let relativePath = file.path;
-            if (basePathToRemove && file.path.startsWith(basePathToRemove)) {
-                relativePath = file.path.substring(basePathToRemove.length);
-                if (relativePath.startsWith('/')) relativePath = relativePath.substring(1);
+            let relativePath: string;
+            if (flatUpload) {
+                // 플랫 업로드: 파일명만 사용 (하위 폴더 없이)
+                relativePath = file.name;
+            } else {
+                relativePath = file.path;
+                if (basePathToRemove && file.path.startsWith(basePathToRemove)) {
+                    relativePath = file.path.substring(basePathToRemove.length);
+                    if (relativePath.startsWith('/')) relativePath = relativePath.substring(1);
+                }
             }
 
             const gcsPath = gcsPrefix
@@ -188,6 +195,50 @@ export async function uploadFilesToGcs(
     }
 
     return result;
+}
+
+export async function listGcsFolders(
+    serviceAccountKeyJson: string,
+    bucket: string,
+    prefix: string = ''
+): Promise<{ folders: string[]; files: string[] }> {
+    let serviceAccount: ServiceAccountKey;
+    try {
+        serviceAccount = JSON.parse(serviceAccountKeyJson) as ServiceAccountKey;
+    } catch {
+        throw new Error('서비스 계정 JSON 키가 올바르지 않습니다.');
+    }
+
+    const accessToken = await getAccessToken(serviceAccount);
+
+    const params = new URLSearchParams({
+        delimiter: '/',
+        prefix: prefix,
+    });
+
+    const url = `https://storage.googleapis.com/storage/v1/b/${bucket}/o?${params.toString()}`;
+
+    const response = await requestUrl({
+        url: url,
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${accessToken}`,
+        },
+        throw: false,
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+        throw new Error(`GCS 폴더 목록 조회 실패: ${response.status} ${response.text}`);
+    }
+
+    const data = response.json;
+    const folders = (data.prefixes || []) as string[];
+    // items 중 폴더 자체(trailing slash로 끝나는 객체)와 현재 prefix는 제외
+    const files = ((data.items || []) as Array<{ name: string }>)
+        .map(item => item.name)
+        .filter(name => !name.endsWith('/') && name !== prefix);
+
+    return { folders, files };
 }
 
 export function getUploadableFilesInFolder(app: App, vaultFolderPath: string): TFile[] {

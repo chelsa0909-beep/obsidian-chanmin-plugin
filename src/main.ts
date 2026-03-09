@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Plugin, TFile, TFolder, Setting, moment } from 'obsidian';
 import { DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab } from "./settings";
-import { getUploadableFilesInFolder, uploadFilesToGcs } from "./gcs-uploader";
+import { getUploadableFilesInFolder, uploadFilesToGcs, listGcsFolders } from "./gcs-uploader";
 import { parseOffice } from 'officeparser';
 import * as kuromoji from 'kuromoji-ko';
 import nlp from 'compromise';
@@ -14,14 +14,16 @@ export default class MyPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		// GCS 업로드 리본 아이콘
-		this.addRibbonIcon('upload-cloud', 'RAG Agent 업로드', async () => {
+		// GCS 업로드 리본 아이콘 (사용자 요청으로 제거)
+		/*
+		this.addRibbonIcon('upload-cloud', 'LGE D2C RAG Agent 업로드', async () => {
 			await this.runUpload();
 		});
+		*/
 
 		// 상태바
 		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('RAG Agent Upload Ready');
+		statusBarItemEl.setText('LGE D2C RAG Agent Upload Ready');
 
 		// 업로드 커맨드
 		this.addCommand({
@@ -46,7 +48,7 @@ export default class MyPlugin extends Plugin {
 					if (isMd || isImage) {
 						menu.addItem((item) => {
 							item
-								.setTitle('RAG Agent 업로드')
+								.setTitle('LGE D2C RAG Agent 업로드')
 								.setIcon('upload-cloud')
 								.onClick(async () => {
 									await this.uploadSingleFile(file);
@@ -91,10 +93,67 @@ export default class MyPlugin extends Plugin {
 					// 4. 폴더 하위 파일 선택 후 GCS 업로드
 					menu.addItem((item) => {
 						item
-							.setTitle('RAG Agent 업로드 (선택)')
+							.setTitle('LGE D2C RAG Agent 업로드')
 							.setIcon('upload-cloud')
 							.onClick(async () => {
 								await this.selectAndUploadFolder(file);
+							});
+					});
+
+					// 5. 파일 선택 → MD 변환 → GCS 업로드
+					menu.addItem((item) => {
+						item
+							.setTitle('MD 변환 및 LGE D2C RAG Agent 업로드')
+							.setIcon('file-up')
+							.onClick(async () => {
+								await this.selectConvertAndUpload(file);
+							});
+					});
+				}
+			})
+		);
+
+		// 여러 파일 선택 후 우클릭 컨텍스트 메뉴
+		this.registerEvent(
+			this.app.workspace.on('files-menu', (menu, files) => {
+				const tFiles = files.filter((f): f is TFile => f instanceof TFile);
+				if (tFiles.length === 0) return;
+
+				const targetExtensions = ['ppt', 'pptx', 'xls', 'xlsx', 'doc', 'docx', 'pdf', 'eml'];
+				const convertableFiles = tFiles.filter(f => targetExtensions.includes(f.extension.toLowerCase()));
+				const uploadableExtensions = ['md', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+				const uploadableFiles = tFiles.filter(f => uploadableExtensions.includes(f.extension.toLowerCase()));
+
+				// MD 변환 메뉴 (변환 가능한 파일이 있을 때)
+				if (convertableFiles.length > 0) {
+					menu.addItem((item) => {
+						item
+							.setTitle(`MD 파일로 변환 (${convertableFiles.length}개)`)
+							.setIcon('file-text')
+							.onClick(async () => {
+								await this.bulkConvertFiles(convertableFiles);
+							});
+					});
+
+					// MD 변환 + GCS 업로드
+					menu.addItem((item) => {
+						item
+							.setTitle(`MD 변환 및 GCS 업로드 (${convertableFiles.length}개)`)
+							.setIcon('file-up')
+							.onClick(async () => {
+								await this.convertAndUploadFiles(convertableFiles);
+							});
+					});
+				}
+
+				// GCS 업로드 메뉴 (업로드 가능한 파일이 있을 때)
+				if (uploadableFiles.length > 0) {
+					menu.addItem((item) => {
+						item
+							.setTitle(`LGE D2C RAG Agent 업로드 (${uploadableFiles.length}개)`)
+							.setIcon('upload-cloud')
+							.onClick(async () => {
+								await this.uploadMultipleFiles(uploadableFiles);
 							});
 					});
 				}
@@ -147,16 +206,18 @@ export default class MyPlugin extends Plugin {
 		new Notice(`✅ 일괄 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
 	}
 
-	async doActualUpload(files: TFile[], basePathToRemove: string) {
-		const { gcsBucket, gcsServiceAccountKey, gcsTargetPrefix } = this.settings;
+	async doActualUpload(files: TFile[], basePathToRemove: string, gcsTargetPrefix?: string, flatUpload: boolean = true) {
+		const { gcsBucket, gcsServiceAccountKey } = this.settings;
+		const prefix = gcsTargetPrefix ?? this.settings.gcsTargetPrefix;
 		try {
 			const result = await uploadFilesToGcs(
 				this.app,
 				gcsBucket,
 				files,
 				gcsServiceAccountKey,
-				gcsTargetPrefix,
-				basePathToRemove
+				prefix,
+				basePathToRemove,
+				flatUpload
 			);
 
 			if (result.failed === 0) {
@@ -176,11 +237,11 @@ export default class MyPlugin extends Plugin {
 		const { gcsBucket, gcsServiceAccountKey } = this.settings;
 
 		if (!gcsBucket) {
-			new Notice('⚠️ RAG Agent GCS 버킷 이름을 설정해주세요.');
+			new Notice('⚠️ LGE D2C RAG Agent GCS 버킷 이름을 설정해주세요.');
 			return;
 		}
 		if (!gcsServiceAccountKey) {
-			new Notice('⚠️ RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			new Notice('⚠️ LGE D2C RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
 			return;
 		}
 
@@ -200,15 +261,21 @@ export default class MyPlugin extends Plugin {
 			hasTag = true;
 		}
 
+		const openFolderSelect = () => {
+			new GcsFolderSelectModal(this.app, this.settings, (selectedPrefix) => {
+				this.doActualUpload([file], basePathToRemove, selectedPrefix);
+			}).open();
+		};
+
 		if (!hasTag) {
 			// 태그가 없으면 바로 경고 모달 표시
 			new ConfirmUploadModal(this.app, [file], () => {
-				this.doActualUpload([file], basePathToRemove);
+				openFolderSelect();
 			}).open();
 		} else {
 			// 태그가 있으면 일반 확인 모달 표시
 			new ConfirmSingleUploadModal(this.app, file, () => {
-				this.doActualUpload([file], basePathToRemove);
+				openFolderSelect();
 			}).open();
 		}
 	}
@@ -217,7 +284,7 @@ export default class MyPlugin extends Plugin {
 		const { gcsBucket, gcsFolder, gcsServiceAccountKey } = this.settings;
 
 		if (!gcsBucket) {
-			new Notice('⚠️ RAG Agent GCS 버킷 이름을 설정해주세요.');
+			new Notice('⚠️ LGE D2C RAG Agent GCS 버킷 이름을 설정해주세요.');
 			return;
 		}
 		if (!gcsFolder) {
@@ -225,7 +292,7 @@ export default class MyPlugin extends Plugin {
 			return;
 		}
 		if (!gcsServiceAccountKey) {
-			new Notice('⚠️ RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			new Notice('⚠️ LGE D2C RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
 			return;
 		}
 
@@ -237,7 +304,9 @@ export default class MyPlugin extends Plugin {
 			}
 			new SelectFilesModal(this.app, files, (selectedFiles) => {
 				if (selectedFiles.length > 0) {
-					this.doActualUpload(selectedFiles, gcsFolder);
+					new GcsFolderSelectModal(this.app, this.settings, (selectedPrefix) => {
+						this.doActualUpload(selectedFiles, gcsFolder, selectedPrefix);
+					}).open();
 				}
 			}).open();
 		} catch (e) {
@@ -250,11 +319,11 @@ export default class MyPlugin extends Plugin {
 		const { gcsBucket, gcsServiceAccountKey } = this.settings;
 
 		if (!gcsBucket) {
-			new Notice('⚠️ RAG Agent GCS 버킷 이름을 설정해주세요.');
+			new Notice('⚠️ LGE D2C RAG Agent GCS 버킷 이름을 설정해주세요.');
 			return;
 		}
 		if (!gcsServiceAccountKey) {
-			new Notice('⚠️ RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			new Notice('⚠️ LGE D2C RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
 			return;
 		}
 
@@ -280,12 +349,176 @@ export default class MyPlugin extends Plugin {
 
 		new SelectFilesModal(this.app, files, (selectedFiles) => {
 			if (selectedFiles.length > 0) {
-				this.doActualUpload(selectedFiles, basePathToRemove);
+				new GcsFolderSelectModal(this.app, this.settings, (selectedPrefix) => {
+					this.doActualUpload(selectedFiles, basePathToRemove, selectedPrefix);
+				}).open();
 			}
 		}).open();
 	}
 
+	async bulkConvertFiles(files: TFile[]) {
+		if (!confirm(`${files.length}개 파일을 MD로 변환하시겠습니까?`)) {
+			return;
+		}
+
+		let successCount = 0;
+		let failCount = 0;
+
+		new Notice(`⏳ ${files.length}개 파일 MD 변환 시작...`);
+
+		for (const file of files) {
+			try {
+				await convertOfficeFileToMarkdown(this.app, file);
+				successCount++;
+				new Notice(`✅ (${successCount}/${files.length}) ${file.name}`);
+			} catch (e) {
+				console.error(`Failed to convert ${file.path}:`, e);
+				failCount++;
+				new Notice(`❌ ${file.name} 변환 실패`);
+			}
+		}
+
+		new Notice(`✅ 일괄 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+	}
+
+	async convertAndUploadFiles(files: TFile[]) {
+		const { gcsBucket, gcsServiceAccountKey } = this.settings;
+
+		if (!gcsBucket) {
+			new Notice('⚠️ LGE D2C RAG Agent GCS 버킷 이름을 설정해주세요.');
+			return;
+		}
+		if (!gcsServiceAccountKey) {
+			new Notice('⚠️ LGE D2C RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			return;
+		}
+
+		if (!confirm(`${files.length}개 파일을 MD로 변환 후 GCS에 업로드하시겠습니까?`)) {
+			return;
+		}
+
+		const convertedMdFiles: TFile[] = [];
+		let successCount = 0;
+		let failCount = 0;
+
+		new Notice(`⏳ ${files.length}개 파일 MD 변환 시작...`);
+
+		for (const file of files) {
+			try {
+				await convertOfficeFileToMarkdown(this.app, file);
+				successCount++;
+
+				const basePath = file.path.replace(new RegExp(`\\.${file.extension}$`), '');
+				const mdFile = this.app.vault.getAbstractFileByPath(`${basePath}.md`);
+				if (mdFile && mdFile instanceof TFile) {
+					convertedMdFiles.push(mdFile);
+				}
+			} catch (e) {
+				console.error(`Failed to convert ${file.path}:`, e);
+				failCount++;
+			}
+		}
+
+		new Notice(`✅ MD 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+
+		if (convertedMdFiles.length > 0) {
+			new GcsFolderSelectModal(this.app, this.settings, (selectedPrefix) => {
+				this.doActualUpload(convertedMdFiles, '', selectedPrefix);
+			}).open();
+		} else {
+			new Notice('⚠️ 변환된 MD 파일이 없어 업로드를 건너뜁니다.');
+		}
+	}
+
+	async uploadMultipleFiles(files: TFile[]) {
+		const { gcsBucket, gcsServiceAccountKey } = this.settings;
+
+		if (!gcsBucket) {
+			new Notice('⚠️ LGE D2C RAG Agent GCS 버킷 이름을 설정해주세요.');
+			return;
+		}
+		if (!gcsServiceAccountKey) {
+			new Notice('⚠️ LGE D2C RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			return;
+		}
+
+		new GcsFolderSelectModal(this.app, this.settings, (selectedPrefix) => {
+			this.doActualUpload(files, '', selectedPrefix);
+		}).open();
+	}
+
 	onunload() {
+	}
+
+	async selectConvertAndUpload(folder: TFolder) {
+		const { gcsBucket, gcsServiceAccountKey } = this.settings;
+
+		if (!gcsBucket) {
+			new Notice('⚠️ LGE D2C RAG Agent GCS 버킷 이름을 설정해주세요.');
+			return;
+		}
+		if (!gcsServiceAccountKey) {
+			new Notice('⚠️ LGE D2C RAG Agent 서비스 계정 JSON 키를 설정해주세요.');
+			return;
+		}
+
+		// 변환 대상 파일 수집
+		const targetExtensions = ['ppt', 'pptx', 'xls', 'xlsx', 'doc', 'docx', 'pdf', 'eml'];
+		const files: TFile[] = [];
+		const collectFiles = (f: TFolder) => {
+			for (const child of f.children) {
+				if (child instanceof TFile && targetExtensions.includes(child.extension.toLowerCase())) {
+					files.push(child);
+				} else if (child instanceof TFolder) {
+					collectFiles(child);
+				}
+			}
+		};
+		collectFiles(folder);
+
+		if (files.length === 0) {
+			new Notice(`⚠️ "${folder.name}" 폴더 내에 변환 가능한 파일이 없습니다.`);
+			return;
+		}
+
+		new SelectConvertFilesModal(this.app, this.settings, files, folder, async (selectedFiles) => {
+			// 1. 선택된 파일들을 MD로 변환
+			const convertedMdFiles: TFile[] = [];
+			let successCount = 0;
+			let failCount = 0;
+
+			new Notice(`⏳ ${selectedFiles.length}개 파일 MD 변환 시작...`);
+
+			for (const file of selectedFiles) {
+				try {
+					await convertOfficeFileToMarkdown(this.app, file);
+					successCount++;
+
+					// 변환된 MD 파일 찾기
+					const basePath = file.path.replace(new RegExp(`\\.${file.extension}$`), '');
+					// 변환된 파일 경로 탐색 (번호 붙은 경우 포함)
+					const mdFile = this.app.vault.getAbstractFileByPath(`${basePath}.md`);
+					if (mdFile && mdFile instanceof TFile) {
+						convertedMdFiles.push(mdFile);
+					}
+				} catch (e) {
+					console.error(`Failed to convert ${file.path}:`, e);
+					failCount++;
+				}
+			}
+
+			new Notice(`✅ MD 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+
+			// 2. 변환된 MD 파일이 있으면 GCS 업로드
+			if (convertedMdFiles.length > 0) {
+				const basePathToRemove = folder.parent ? folder.parent.path : '';
+				new GcsFolderSelectModal(this.app, this.settings, (selectedPrefix) => {
+					this.doActualUpload(convertedMdFiles, basePathToRemove, selectedPrefix);
+				}).open();
+			} else {
+				new Notice('⚠️ 변환된 MD 파일이 없어 업로드를 건너뜁니다.');
+			}
+		}).open();
 	}
 
 	async loadSettings() {
@@ -376,7 +609,7 @@ class SelectFilesModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 
-		contentEl.createEl('h2', { text: 'RAG Agent 업로드 파일 선택' });
+		contentEl.createEl('h2', { text: 'LGE D2C RAG Agent 업로드 파일 선택' });
 
 		const descEl = contentEl.createEl('p', { text: '업로드할 마크다운 파일을 선택해주세요.' });
 		descEl.style.marginBottom = '10px';
@@ -905,7 +1138,7 @@ class ConfirmSingleUploadModal extends Modal {
 		const { contentEl } = this;
 
 		contentEl.createEl('h2', { text: '개별 파일 업로드 확인' });
-		contentEl.createEl('p', { text: `"${this.file.name}" 파일을 RAG Agent로 전송하시겠습니까?` });
+		contentEl.createEl('p', { text: `"${this.file.name}" 파일을 LGE RAG Agent로 전송하시겠습니까?` });
 
 		const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
 
@@ -931,6 +1164,432 @@ class ConfirmSingleUploadModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
+	}
+}
+
+class SelectConvertFilesModal extends Modal {
+	files: TFile[];
+	selectedFiles: Set<TFile>;
+	settings: MyPluginSettings;
+	folder: TFolder;
+	onConfirm: (selectedFiles: TFile[]) => void;
+
+	currentSortBy: 'name' | 'ctime' | 'size' = 'name';
+	sortAsc: boolean = true;
+	toggles: { file: TFile, toggle: any }[] = [];
+
+	constructor(app: App, settings: MyPluginSettings, files: TFile[], folder: TFolder, onConfirm: (selectedFiles: TFile[]) => void) {
+		super(app);
+		this.settings = settings;
+		this.files = files;
+		this.folder = folder;
+		this.selectedFiles = new Set(files);
+		this.onConfirm = onConfirm;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+
+		contentEl.createEl('h2', { text: 'MD 변환 및 GCS 업로드 파일 선택' });
+
+		const descEl = contentEl.createEl('p', { text: '변환 후 GCS에 업로드할 파일을 선택해주세요.' });
+		descEl.style.marginBottom = '10px';
+
+		// 상단 컨트롤 컨테이너
+		const controlsContainer = contentEl.createDiv({ cls: 'modal-controls-container' });
+		controlsContainer.style.display = 'flex';
+		controlsContainer.style.justifyContent = 'space-between';
+		controlsContainer.style.alignItems = 'center';
+		controlsContainer.style.marginBottom = '10px';
+		controlsContainer.style.gap = '10px';
+		controlsContainer.style.flexWrap = 'wrap';
+
+		// 정렬 컨트롤
+		const sortContainer = controlsContainer.createDiv();
+		sortContainer.style.display = 'flex';
+		sortContainer.style.alignItems = 'center';
+		sortContainer.style.gap = '5px';
+
+		sortContainer.createEl('span', { text: '정렬: ' });
+
+		const sortDropdown = sortContainer.createEl('select');
+		sortDropdown.createEl('option', { value: 'name', text: '파일명' });
+		sortDropdown.createEl('option', { value: 'ctime', text: '생성일' });
+		sortDropdown.createEl('option', { value: 'size', text: '크기' });
+		sortDropdown.value = this.currentSortBy;
+
+		const sortOrderBtn = sortContainer.createEl('button', { text: this.sortAsc ? '▲ 오름차순' : '▼ 내림차순' });
+
+		// 선택 컨트롤
+		const selectionContainer = controlsContainer.createDiv();
+		selectionContainer.style.display = 'flex';
+		selectionContainer.style.gap = '5px';
+		selectionContainer.style.alignItems = 'center';
+
+		let isAllSelected = this.selectedFiles.size === this.files.length;
+
+		const selectAllSetting = new Setting(selectionContainer)
+			.setName('전체 선택')
+			.addToggle(toggle => {
+				toggle.setValue(isAllSelected)
+					.onChange(value => {
+						isAllSelected = value;
+						if (value) {
+							this.files.forEach(file => this.selectedFiles.add(file));
+							this.toggles.forEach(t => t.toggle.setValue(true));
+						} else {
+							this.selectedFiles.clear();
+							this.toggles.forEach(t => t.toggle.setValue(false));
+						}
+					});
+			});
+		selectAllSetting.settingEl.style.padding = '0';
+		selectAllSetting.settingEl.style.borderTop = 'none';
+
+		const listContainer = contentEl.createDiv({ cls: 'modal-file-list-container' });
+		listContainer.style.maxHeight = '300px';
+		listContainer.style.overflowY = 'auto';
+		listContainer.style.border = '1px solid var(--background-modifier-border)';
+		listContainer.style.padding = '10px';
+		listContainer.style.borderRadius = '5px';
+		listContainer.style.marginBottom = '20px';
+
+		const renderFileList = () => {
+			listContainer.empty();
+			this.toggles = [];
+
+			const sortedFiles = [...this.files].sort((a, b) => {
+				let cmp = 0;
+				if (this.currentSortBy === 'name') {
+					cmp = a.name.localeCompare(b.name);
+				} else if (this.currentSortBy === 'ctime') {
+					cmp = a.stat.ctime - b.stat.ctime;
+				} else if (this.currentSortBy === 'size') {
+					cmp = a.stat.size - b.stat.size;
+				}
+				return this.sortAsc ? cmp : -cmp;
+			});
+
+			sortedFiles.forEach(file => {
+				const sizeKb = (file.stat.size / 1024).toFixed(1) + ' KB';
+				const dateStr = moment(file.stat.ctime).format('YYYY-MM-DD HH:mm');
+				const ext = file.extension.toUpperCase();
+
+				const setting = new Setting(listContainer)
+					.setName(`[${ext}] ${file.name}`)
+					.setDesc(`${sizeKb} | ${dateStr} | ${file.path}`)
+					.addToggle(toggle => {
+						this.toggles.push({ file, toggle });
+						toggle
+							.setValue(this.selectedFiles.has(file))
+							.onChange(value => {
+								if (value) {
+									this.selectedFiles.add(file);
+								} else {
+									this.selectedFiles.delete(file);
+								}
+							});
+					});
+
+				setting.settingEl.style.padding = '5px 0';
+				setting.settingEl.style.borderTop = 'none';
+			});
+		};
+
+		renderFileList();
+
+		sortDropdown.addEventListener('change', (e) => {
+			this.currentSortBy = (e.target as HTMLSelectElement).value as 'name' | 'ctime' | 'size';
+			renderFileList();
+		});
+
+		sortOrderBtn.addEventListener('click', () => {
+			this.sortAsc = !this.sortAsc;
+			sortOrderBtn.textContent = this.sortAsc ? '▲ 오름차순' : '▼ 내림차순';
+			renderFileList();
+		});
+
+		const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+		buttonContainer.style.display = 'flex';
+		buttonContainer.style.justifyContent = 'flex-end';
+		buttonContainer.style.gap = '10px';
+
+		const confirmButton = buttonContainer.createEl('button', {
+			text: '선택한 파일 변환 및 업로드',
+			cls: 'mod-cta'
+		});
+
+		const cancelButton = buttonContainer.createEl('button', {
+			text: '취소'
+		});
+
+		confirmButton.addEventListener('click', () => {
+			const selectedList = Array.from(this.selectedFiles);
+			if (selectedList.length === 0) {
+				new Notice('⚠️ 선택된 파일이 없습니다.');
+				return;
+			}
+			this.close();
+			this.onConfirm(selectedList);
+		});
+
+		cancelButton.addEventListener('click', () => {
+			this.close();
+		});
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+
+class GcsFolderSelectModal extends Modal {
+	settings: MyPluginSettings;
+	onConfirm: (selectedPrefix: string) => void;
+	currentPrefix: string;
+	listContainer: HTMLDivElement;
+	breadcrumbEl: HTMLElement;
+	loadingEl: HTMLElement;
+	selectedPrefix: string;
+	confirmButton: HTMLButtonElement;
+
+	constructor(app: App, settings: MyPluginSettings, onConfirm: (selectedPrefix: string) => void) {
+		super(app);
+		this.settings = settings;
+		this.onConfirm = onConfirm;
+		this.currentPrefix = settings.gcsTargetPrefix ? settings.gcsTargetPrefix + '/' : '';
+		this.selectedPrefix = this.currentPrefix;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+
+		contentEl.createEl('h2', { text: 'GCS 업로드 폴더 선택' });
+
+		contentEl.createEl('p', {
+			text: '파일을 업로드할 GCS 폴더를 선택하세요.',
+			cls: 'setting-item-description'
+		});
+
+		// Breadcrumb 영역
+		this.breadcrumbEl = contentEl.createDiv({ cls: 'gcs-breadcrumb' });
+		this.breadcrumbEl.style.marginBottom = '10px';
+		this.breadcrumbEl.style.padding = '8px 12px';
+		this.breadcrumbEl.style.backgroundColor = 'var(--background-secondary)';
+		this.breadcrumbEl.style.borderRadius = '5px';
+		this.breadcrumbEl.style.fontSize = '0.9em';
+		this.breadcrumbEl.style.fontFamily = 'monospace';
+
+		// 폴더 리스트 영역
+		this.listContainer = contentEl.createDiv({ cls: 'gcs-folder-list' });
+		this.listContainer.style.maxHeight = '300px';
+		this.listContainer.style.overflowY = 'auto';
+		this.listContainer.style.border = '1px solid var(--background-modifier-border)';
+		this.listContainer.style.borderRadius = '5px';
+		this.listContainer.style.marginBottom = '15px';
+
+		// 로딩 표시
+		this.loadingEl = contentEl.createDiv();
+		this.loadingEl.style.textAlign = 'center';
+		this.loadingEl.style.padding = '20px';
+		this.loadingEl.style.color = 'var(--text-muted)';
+		this.loadingEl.style.display = 'none';
+
+		// 버튼 컨테이너
+		const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+		buttonContainer.style.display = 'flex';
+		buttonContainer.style.justifyContent = 'flex-end';
+		buttonContainer.style.gap = '10px';
+
+		const confirmButton = buttonContainer.createEl('button', {
+			text: '이 폴더에 업로드',
+			cls: 'mod-cta'
+		});
+
+		const cancelButton = buttonContainer.createEl('button', {
+			text: '취소'
+		});
+
+		confirmButton.addEventListener('click', () => {
+			this.close();
+			// trailing slash 제거
+			const prefix = this.selectedPrefix.endsWith('/')
+				? this.selectedPrefix.slice(0, -1)
+				: this.selectedPrefix;
+			this.onConfirm(prefix);
+		});
+
+		cancelButton.addEventListener('click', () => {
+			this.close();
+		});
+
+		this.confirmButton = confirmButton;
+
+		// 초기 로딩
+		this.loadFolders();
+	}
+
+	updateBreadcrumb() {
+		this.breadcrumbEl.empty();
+		const display = this.currentPrefix || '/';
+		const icon = this.breadcrumbEl.createEl('span', { text: '📂 ' });
+		icon.style.marginRight = '4px';
+		this.breadcrumbEl.createEl('span', {
+			text: `${this.settings.gcsBucket} / ${display}`
+		});
+
+		// 브레드크럼 업데이트 시 현재 폴더를 기본 선택으로 리셋 (원할 경우)
+		this.selectedPrefix = this.currentPrefix;
+		if (this.confirmButton) {
+			this.confirmButton.textContent = '현재 폴더에 전송';
+		}
+	}
+
+	async loadFolders() {
+		this.updateBreadcrumb();
+		this.listContainer.empty();
+
+		// 로딩 표시
+		this.loadingEl.style.display = 'block';
+		this.loadingEl.setText('📡 폴더 목록 로딩 중...');
+		this.listContainer.appendChild(this.loadingEl);
+
+		try {
+			const result = await listGcsFolders(
+				this.settings.gcsServiceAccountKey,
+				this.settings.gcsBucket,
+				this.currentPrefix
+			);
+
+			this.loadingEl.style.display = 'none';
+			this.listContainer.empty();
+
+			// 현재 탐색 중인 폴더를 기본 타겟으로 설정
+			let selectedPrefix = this.currentPrefix;
+
+			// 상위 폴더 버튼 (루트가 아닌 경우)
+			if (this.currentPrefix) {
+				const parentItem = this.listContainer.createDiv({ cls: 'gcs-folder-item' });
+				this.styleFolderItem(parentItem);
+				parentItem.createEl('span', { text: '⬆️ 상위 폴더로' });
+				parentItem.style.fontWeight = 'bold';
+				parentItem.addEventListener('click', () => {
+					// 상위 폴더로 이동
+					const parts = this.currentPrefix.replace(/\/$/, '').split('/');
+					parts.pop();
+					this.currentPrefix = parts.length > 0 ? parts.join('/') + '/' : '';
+					this.loadFolders();
+				});
+			}
+
+			// 폴더 목록 렌더링
+			for (const folder of result.folders) {
+				const folderItem = this.listContainer.createDiv({ cls: 'gcs-folder-item' });
+				this.styleFolderItem(folderItem);
+
+				const folderNameContainer = folderItem.createDiv();
+				folderNameContainer.style.display = 'flex';
+				folderNameContainer.style.justifyContent = 'space-between';
+				folderNameContainer.style.width = '100%';
+				folderNameContainer.style.alignItems = 'center';
+
+				const displayName = folder.replace(this.currentPrefix, '').replace(/\/$/, '');
+				folderNameContainer.createEl('span', { text: `📁 ${displayName}` });
+
+				// 버튼 컨테이너 (선택, 진입)
+				const btnGroup = folderNameContainer.createDiv();
+				btnGroup.style.display = 'flex';
+				btnGroup.style.gap = '5px';
+
+				const selectBtn = btnGroup.createEl('button', { text: '선택' });
+				selectBtn.style.padding = '2px 8px';
+				selectBtn.style.fontSize = '0.8em';
+
+				const enterBtn = btnGroup.createEl('button', { text: '진입', cls: 'mod-cta' });
+				enterBtn.style.padding = '2px 8px';
+				enterBtn.style.fontSize = '0.8em';
+
+				// 선택 버튼 클릭 시
+				selectBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					// 모든 아이템 하이라이트 제거
+					this.listContainer.querySelectorAll('.gcs-folder-item').forEach(el => {
+						(el as HTMLElement).style.backgroundColor = '';
+					});
+					// 현재 아이템 하이라이트
+					folderItem.style.backgroundColor = 'var(--background-modifier-success-soft)';
+					this.selectedPrefix = folder;
+
+					// 확인 버튼 텍스트 업데이트
+					if (this.confirmButton) {
+						this.confirmButton.textContent = `"${displayName}" 폴더로 전송`;
+					}
+				});
+
+				// 진입 버튼 클릭 시
+				enterBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this.currentPrefix = folder;
+					this.loadFolders();
+				});
+
+				// 폴더 아이템 자체를 클릭해도 선택 효과
+				folderItem.addEventListener('click', (e) => {
+					if (e.target !== enterBtn) {
+						selectBtn.click();
+					}
+				});
+			}
+
+			// 파일 목록 렌더링
+			for (const file of result.files) {
+				const fileItem = this.listContainer.createDiv({ cls: 'gcs-file-item' });
+				fileItem.style.padding = '8px 15px';
+				fileItem.style.borderBottom = '1px solid var(--background-modifier-border)';
+				fileItem.style.color = 'var(--text-muted)';
+				fileItem.style.fontSize = '0.9em';
+
+				const displayFileName = file.replace(this.currentPrefix, '');
+				fileItem.createEl('span', { text: `� ${displayFileName}` });
+			}
+
+			if (result.folders.length === 0 && result.files.length === 0 && !this.currentPrefix) {
+				const emptyMsg = this.listContainer.createDiv();
+				emptyMsg.style.padding = '20px';
+				emptyMsg.style.textAlign = 'center';
+				emptyMsg.style.color = 'var(--text-muted)';
+				emptyMsg.setText('하위 폴더/파일이 없습니다. 이 위치에 업로드할 수 있습니다.');
+			}
+
+		} catch (e) {
+			this.loadingEl.style.display = 'none';
+			this.listContainer.empty();
+			const errorMsg = this.listContainer.createDiv();
+			errorMsg.style.padding = '20px';
+			errorMsg.style.textAlign = 'center';
+			errorMsg.style.color = 'var(--text-error)';
+			const msg = e instanceof Error ? e.message : String(e);
+			errorMsg.setText(`❌ 폴더 목록을 가져올 수 없습니다: ${msg}`);
+			console.error('GCS List Folders Error:', e);
+		}
+	}
+
+	styleFolderItem(el: HTMLElement) {
+		el.style.padding = '10px 15px';
+		el.style.cursor = 'pointer';
+		el.style.borderBottom = '1px solid var(--background-modifier-border)';
+		el.style.transition = 'background-color 0.15s';
+		el.addEventListener('mouseenter', () => {
+			el.style.backgroundColor = 'var(--background-modifier-hover)';
+		});
+		el.addEventListener('mouseleave', () => {
+			el.style.backgroundColor = '';
+		});
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }
 
@@ -996,13 +1655,6 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 		phantom.style.color = '#000000';
 
 		try {
-			// 미디어 폴더 생성
-			try {
-				if (!app.vault.getAbstractFileByPath(mediaPath)) {
-					await app.vault.createFolder(mediaPath);
-				}
-			} catch (e) { /* 무시 */ }
-
 			// 이메일 내용 렌더링
 			let htmlContent = `<div style="font-family: sans-serif; line-height: 1.6;">`;
 			htmlContent += `<h1 style="border-bottom: 2px solid #eeeeee; padding-bottom: 10px;">${email.subject || 'No Subject'}</h1>`;
@@ -1015,8 +1667,27 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 			}
 			htmlContent += `<hr style="border: 0; border-top: 1px solid #eeeeee; margin: 20px 0;">`;
 
+			let processedHtml = email.html || '';
+			if (email.attachments && email.attachments.length > 0) {
+				for (const att of email.attachments) {
+					if (att.contentId && att.content) {
+						// CID를 Base64 데이터 URL로 변환
+						const cid = att.contentId.replace(/[<>]/g, '');
+						const blob = new Blob([att.content], { type: att.mimeType || 'image/png' });
+						const dataUrl = await new Promise<string>((resolve) => {
+							const reader = new FileReader();
+							reader.onloadend = () => resolve(reader.result as string);
+							reader.readAsDataURL(blob);
+						});
+						// HTML 내의 cid: 링크를 데이터 URL로 교체
+						const cidRegex = new RegExp(`cid:${cid}`, 'g');
+						processedHtml = processedHtml.replace(cidRegex, dataUrl);
+					}
+				}
+			}
+
 			if (email.html) {
-				htmlContent += email.html;
+				htmlContent += processedHtml;
 			} else if (email.text) {
 				htmlContent += `<pre style="white-space: pre-wrap; word-break: break-all;">${email.text}</pre>`;
 			}
@@ -1035,7 +1706,9 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 			if (blob) {
 				const screenshotBuf = await blob.arrayBuffer();
 				const screenshotName = `${file.basename}.png`;
-				const screenshotPath = `${mediaPath}/${screenshotName}`;
+				// EML 파일과 동일한 폴더에 이미지 저장
+				const parentFolder = file.parent ? file.parent.path : '';
+				const screenshotPath = parentFolder ? `${parentFolder}/${screenshotName}` : screenshotName;
 
 				// 기존 파일 삭제 후 생성 (혹은 건너뛰기)
 				const existing = app.vault.getAbstractFileByPath(screenshotPath);
