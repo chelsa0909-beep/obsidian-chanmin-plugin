@@ -83,7 +83,7 @@ export default class MyPlugin extends Plugin {
 					// 3. 폴더 하위 파일 일괄 MD 변환 메뉴
 					menu.addItem((item) => {
 						item
-							.setTitle('일괄 MD 파일로변환')
+							.setTitle('MD 파일로 일괄 변환')
 							.setIcon('file-text')
 							.onClick(async () => {
 								await this.bulkConvertFolder(file);
@@ -93,7 +93,7 @@ export default class MyPlugin extends Plugin {
 					// 4. 폴더 하위 파일 선택 후 GCS 업로드
 					menu.addItem((item) => {
 						item
-							.setTitle('RAG Agent 업로드')
+							.setTitle('RAG Agent 일괄 업로드')
 							.setIcon('upload-cloud')
 							.onClick(async () => {
 								await this.selectAndUploadFolder(file);
@@ -103,7 +103,7 @@ export default class MyPlugin extends Plugin {
 					// 5. 파일 선택 → MD 변환 → GCS 업로드
 					menu.addItem((item) => {
 						item
-							.setTitle('일괄 MD 파일로 변환 후 RAG Agent 업로드')
+							.setTitle('MD 파일로 변환 후 RAG Agent 일괄 업로드')
 							.setIcon('file-up')
 							.onClick(async () => {
 								await this.selectConvertAndUpload(file);
@@ -128,20 +128,10 @@ export default class MyPlugin extends Plugin {
 				if (convertableFiles.length > 0) {
 					menu.addItem((item) => {
 						item
-							.setTitle(`MD 파일로 변환 (${convertableFiles.length}개)`)
+							.setTitle(`MD 파일로 일괄 변환 (${convertableFiles.length}개)`)
 							.setIcon('file-text')
 							.onClick(async () => {
 								await this.bulkConvertFiles(convertableFiles);
-							});
-					});
-
-					// MD 변환 + GCS 업로드
-					menu.addItem((item) => {
-						item
-							.setTitle(`MD 변환 및 RAG Agent 업로드 (${convertableFiles.length}개)`)
-							.setIcon('file-up')
-							.onClick(async () => {
-								await this.convertAndUploadFiles(convertableFiles);
 							});
 					});
 				}
@@ -150,10 +140,23 @@ export default class MyPlugin extends Plugin {
 				if (uploadableFiles.length > 0) {
 					menu.addItem((item) => {
 						item
-							.setTitle(`RAG Agent 업로드 (${uploadableFiles.length}개)`)
+							.setTitle(`RAG Agent 일괄 업로드 (${uploadableFiles.length}개)`)
 							.setIcon('upload-cloud')
 							.onClick(async () => {
 								await this.uploadMultipleFiles(uploadableFiles);
+							});
+					});
+				}
+				// MD 변환 메뉴 (변환 가능한 파일이 있을 때)
+				if (convertableFiles.length > 0) {
+
+					// MD 변환 + GCS 업로드
+					menu.addItem((item) => {
+						item
+							.setTitle(`MD 파일로 변환 후 RAG Agent 일괄 업로드 (${convertableFiles.length}개)`)
+							.setIcon('file-up')
+							.onClick(async () => {
+								await this.convertAndUploadFiles(convertableFiles);
 							});
 					});
 				}
@@ -188,27 +191,108 @@ export default class MyPlugin extends Plugin {
 			return;
 		}
 
+		const progressModal = new ConversionProgressModal(this.app, filesToConvert);
+		progressModal.open();
+		const convertNotice = new Notice('⏳ MD 파일 변환 중... 잠시 기다려주세요.', 0);
+
 		let successCount = 0;
 		let failCount = 0;
 
-		new Notice(`⏳ 일괄 변환 시작 (${filesToConvert.length}개)...`);
-
 		for (const file of filesToConvert) {
+			if (progressModal.isCancelled) break;
+			progressModal.setFileLoading(file.path);
+			await progressModal.waitForRender();
 			try {
 				await convertOfficeFileToMarkdown(this.app, file);
 				successCount++;
+				progressModal.setFileSuccess(file.path);
 			} catch (e) {
 				console.error(`Failed to convert ${file.path}:`, e);
 				failCount++;
+				progressModal.setFileError(file.path);
 			}
+			progressModal.updateSummary(successCount + failCount);
 		}
 
-		new Notice(`✅ 일괄 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+		convertNotice.hide();
+		progressModal.enableClose();
+		if (progressModal.isCancelled) {
+			new Notice(`🛑 변환이 취소되었습니다. (${successCount}개 성공, ${failCount}개 실패)`);
+		} else {
+			new Notice(`✅ 일괄 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+		}
 	}
 
 	async doActualUpload(files: TFile[], basePathToRemove: string, gcsTargetPrefix?: string, flatUpload: boolean = true) {
 		const { gcsBucket, gcsServiceAccountKey } = this.settings;
 		const prefix = gcsTargetPrefix ?? this.settings.gcsTargetPrefix;
+
+		// 업로드 진행 상황 모달
+		const progressModal = new ConversionProgressModal(this.app, files);
+		// 제목 변경
+		progressModal.onOpen = function () {
+			const { contentEl } = this;
+			contentEl.createEl('h2', { text: '📡 RAG Agent 업로드 진행 중' });
+
+			if (!document.getElementById('convert-spinner-style')) {
+				const styleEl = document.createElement('style');
+				styleEl.id = 'convert-spinner-style';
+				styleEl.textContent = `
+					@keyframes convert-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+					.convert-spinner {
+						display: inline-block; width: 18px; height: 18px;
+						border: 3px solid var(--text-muted);
+						border-top-color: var(--interactive-accent);
+						border-radius: 50%;
+						animation: convert-spin 0.8s linear infinite;
+						vertical-align: middle;
+					}
+				`;
+				document.head.appendChild(styleEl);
+			}
+
+			const listContainer = contentEl.createDiv();
+			listContainer.style.maxHeight = '400px';
+			listContainer.style.overflowY = 'auto';
+			listContainer.style.border = '1px solid var(--background-modifier-border)';
+			listContainer.style.borderRadius = '5px';
+			listContainer.style.marginBottom = '15px';
+
+			this.files.forEach((file: TFile) => {
+				const itemEl = listContainer.createDiv();
+				itemEl.style.display = 'flex';
+				itemEl.style.justifyContent = 'space-between';
+				itemEl.style.alignItems = 'center';
+				itemEl.style.padding = '8px 12px';
+				itemEl.style.borderBottom = '1px solid var(--background-modifier-border)';
+
+				const nameEl = itemEl.createEl('span', { text: file.name });
+				nameEl.style.flex = '1';
+				nameEl.style.overflow = 'hidden';
+				nameEl.style.textOverflow = 'ellipsis';
+				nameEl.style.whiteSpace = 'nowrap';
+				nameEl.style.marginRight = '10px';
+
+				const statusEl = itemEl.createDiv();
+				statusEl.createEl('span', { text: '⏳ 대기', cls: 'setting-item-description' });
+				this.statusEls.set(file.path, statusEl);
+			});
+
+			this.summaryEl = contentEl.createDiv();
+			this.summaryEl.style.marginBottom = '10px';
+			this.summaryEl.style.textAlign = 'center';
+			this.summaryEl.style.color = 'var(--text-muted)';
+			this.summaryEl.setText(`0 / ${this.files.length} 완료`);
+
+			const footer = contentEl.createDiv();
+			footer.style.textAlign = 'right';
+			this.closeBtn = footer.createEl('button', { text: '닫기' });
+			this.closeBtn.disabled = true;
+			this.closeBtn.addEventListener('click', () => this.close());
+		};
+		progressModal.open();
+
+		const uploadNotice = new Notice('📡 RAG Agent 파일 전송 중... 잠시 기다려주세요.', 0);
 		try {
 			const result = await uploadFilesToGcs(
 				this.app,
@@ -217,9 +301,22 @@ export default class MyPlugin extends Plugin {
 				gcsServiceAccountKey,
 				prefix,
 				basePathToRemove,
-				flatUpload
+				flatUpload,
+				(file, status, done, total) => {
+					if (status === 'loading') {
+						progressModal.setFileLoading(file.path);
+					} else if (status === 'success') {
+						progressModal.setFileSuccess(file.path);
+					} else if (status === 'error') {
+						progressModal.setFileError(file.path);
+					}
+					progressModal.updateSummary(done);
+				},
+				() => progressModal.isCancelled
 			);
 
+			uploadNotice.hide();
+			progressModal.enableClose();
 			if (result.failed === 0) {
 				new Notice(`🎉 업로드 완료! ${result.success}개 파일 성공`);
 			} else {
@@ -227,6 +324,8 @@ export default class MyPlugin extends Plugin {
 				console.error('GCS Upload Errors:', result.errors);
 			}
 		} catch (e) {
+			uploadNotice.hide();
+			progressModal.enableClose();
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`❌ 업로드 실패: ${msg}`);
 			console.error('GCS Upload Error:', e);
@@ -361,24 +460,36 @@ export default class MyPlugin extends Plugin {
 			return;
 		}
 
+		const progressModal = new ConversionProgressModal(this.app, files);
+		progressModal.open();
+		const convertNotice = new Notice('⏳ MD 파일 변환 중... 잠시 기다려주세요.', 0);
+
 		let successCount = 0;
 		let failCount = 0;
 
-		new Notice(`⏳ ${files.length}개 파일 MD 변환 시작...`);
-
 		for (const file of files) {
+			if (progressModal.isCancelled) break;
+			progressModal.setFileLoading(file.path);
+			await progressModal.waitForRender(); // 스피너 렌더링 대기
 			try {
 				await convertOfficeFileToMarkdown(this.app, file);
 				successCount++;
-				new Notice(`✅ (${successCount}/${files.length}) ${file.name}`);
+				progressModal.setFileSuccess(file.path);
 			} catch (e) {
 				console.error(`Failed to convert ${file.path}:`, e);
 				failCount++;
-				new Notice(`❌ ${file.name} 변환 실패`);
+				progressModal.setFileError(file.path);
 			}
+			progressModal.updateSummary(successCount + failCount);
 		}
 
-		new Notice(`✅ 일괄 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+		convertNotice.hide();
+		progressModal.enableClose();
+		if (progressModal.isCancelled) {
+			new Notice(`🛑 변환이 취소되었습니다. (${successCount}개 성공, ${failCount}개 실패)`);
+		} else {
+			new Notice(`✅ 일괄 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
+		}
 	}
 
 	async convertAndUploadFiles(files: TFile[]) {
@@ -397,16 +508,21 @@ export default class MyPlugin extends Plugin {
 			return;
 		}
 
+		const progressModal = new ConversionProgressModal(this.app, files);
+		progressModal.open();
+
 		const convertedMdFiles: TFile[] = [];
 		let successCount = 0;
 		let failCount = 0;
 
-		new Notice(`⏳ ${files.length}개 파일 MD 변환 시작...`);
-
 		for (const file of files) {
+			if (progressModal.isCancelled) break;
+			progressModal.setFileLoading(file.path);
+			await progressModal.waitForRender(); // 스피너 렌더링 대기
 			try {
 				await convertOfficeFileToMarkdown(this.app, file);
 				successCount++;
+				progressModal.setFileSuccess(file.path);
 
 				const basePath = file.path.replace(new RegExp(`\\.${file.extension}$`), '');
 				const mdFile = this.app.vault.getAbstractFileByPath(`${basePath}.md`);
@@ -416,7 +532,16 @@ export default class MyPlugin extends Plugin {
 			} catch (e) {
 				console.error(`Failed to convert ${file.path}:`, e);
 				failCount++;
+				progressModal.setFileError(file.path);
 			}
+			progressModal.updateSummary(successCount + failCount);
+		}
+
+		progressModal.enableClose();
+
+		if (progressModal.isCancelled) {
+			new Notice(`🛑 변환이 취소되었습니다. 업로드를 진행하지 않습니다.`);
+			return;
 		}
 
 		new Notice(`✅ MD 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
@@ -482,21 +607,25 @@ export default class MyPlugin extends Plugin {
 		}
 
 		new SelectConvertFilesModal(this.app, this.settings, files, folder, async (selectedFiles) => {
-			// 1. 선택된 파일들을 MD로 변환
+			// 1. 선택된 파일들을 MD로 변환 (진행 상황 모달 표시)
+			const progressModal = new ConversionProgressModal(this.app, selectedFiles);
+			progressModal.open();
+
 			const convertedMdFiles: TFile[] = [];
 			let successCount = 0;
 			let failCount = 0;
 
-			new Notice(`⏳ ${selectedFiles.length}개 파일 MD 변환 시작...`);
-
 			for (const file of selectedFiles) {
+				if (progressModal.isCancelled) break;
+				progressModal.setFileLoading(file.path);
+				await progressModal.waitForRender(); // 스피너 렌더링 대기
 				try {
 					await convertOfficeFileToMarkdown(this.app, file);
 					successCount++;
+					progressModal.setFileSuccess(file.path);
 
 					// 변환된 MD 파일 찾기
 					const basePath = file.path.replace(new RegExp(`\\.${file.extension}$`), '');
-					// 변환된 파일 경로 탐색 (번호 붙은 경우 포함)
 					const mdFile = this.app.vault.getAbstractFileByPath(`${basePath}.md`);
 					if (mdFile && mdFile instanceof TFile) {
 						convertedMdFiles.push(mdFile);
@@ -504,7 +633,16 @@ export default class MyPlugin extends Plugin {
 				} catch (e) {
 					console.error(`Failed to convert ${file.path}:`, e);
 					failCount++;
+					progressModal.setFileError(file.path);
 				}
+				progressModal.updateSummary(successCount + failCount);
+			}
+
+			progressModal.enableClose();
+
+			if (progressModal.isCancelled) {
+				new Notice(`🛑 변환이 취소되었습니다. 업로드를 진행하지 않습니다.`);
+				return;
 			}
 
 			new Notice(`✅ MD 변환 완료: ${successCount}개 성공, ${failCount}개 실패`);
@@ -575,15 +713,151 @@ class ConfirmConvertModal extends Modal {
 	}
 
 	async convertFile() {
-		new Notice('⏳ 텍스트 및 미디어 추출 중...');
+		const convertNotice = new Notice('⏳ 텍스트 및 미디어 추출 중...', 0);
 		try {
 			await convertOfficeFileToMarkdown(this.app, this.file);
+			convertNotice.hide();
 			new Notice(`✅ 변환 완료!`);
 		} catch (error) {
+			convertNotice.hide();
 			console.error('Office Parsing Error:', error);
 			const msg = error instanceof Error ? error.message : String(error);
 			new Notice(`❌ 변환 실패: ${msg}`);
 		}
+	}
+}
+
+// 변환 진행 상황 표시 모달
+class ConversionProgressModal extends Modal {
+	files: TFile[];
+	statusEls: Map<string, HTMLElement> = new Map();
+	closeBtn: HTMLButtonElement;
+	cancelBtn: HTMLButtonElement;
+	summaryEl: HTMLElement;
+	isCancelled: boolean = false;
+
+	constructor(app: App, files: TFile[]) {
+		super(app);
+		this.files = files;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.createEl('h2', { text: '🔄 MarkDown 변환 진행 중' });
+
+		// CSS 스피너 애니메이션을 document.head에 추가
+		if (!document.getElementById('convert-spinner-style')) {
+			const styleEl = document.createElement('style');
+			styleEl.id = 'convert-spinner-style';
+			styleEl.textContent = `
+				@keyframes convert-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+				.convert-spinner {
+					display: inline-block;
+					width: 18px; height: 18px;
+					border: 3px solid var(--text-muted);
+					border-top-color: var(--interactive-accent);
+					border-radius: 50%;
+					animation: convert-spin 0.8s linear infinite;
+					vertical-align: middle;
+				}
+			`;
+			document.head.appendChild(styleEl);
+		}
+
+		const listContainer = contentEl.createDiv();
+		listContainer.style.maxHeight = '400px';
+		listContainer.style.overflowY = 'auto';
+		listContainer.style.border = '1px solid var(--background-modifier-border)';
+		listContainer.style.borderRadius = '5px';
+		listContainer.style.marginBottom = '15px';
+
+		this.files.forEach(file => {
+			const itemEl = listContainer.createDiv();
+			itemEl.style.display = 'flex';
+			itemEl.style.justifyContent = 'space-between';
+			itemEl.style.alignItems = 'center';
+			itemEl.style.padding = '8px 12px';
+			itemEl.style.borderBottom = '1px solid var(--background-modifier-border)';
+
+			const nameEl = itemEl.createEl('span', { text: file.name });
+			nameEl.style.flex = '1';
+			nameEl.style.overflow = 'hidden';
+			nameEl.style.textOverflow = 'ellipsis';
+			nameEl.style.whiteSpace = 'nowrap';
+			nameEl.style.marginRight = '10px';
+
+			const statusEl = itemEl.createDiv();
+			statusEl.createEl('span', { text: '⏳ 대기', cls: 'setting-item-description' });
+			this.statusEls.set(file.path, statusEl);
+		});
+
+		this.summaryEl = contentEl.createDiv();
+		this.summaryEl.style.marginBottom = '10px';
+		this.summaryEl.style.textAlign = 'center';
+		this.summaryEl.style.color = 'var(--text-muted)';
+		this.summaryEl.setText(`0 / ${this.files.length} 완료`);
+
+		const footer = contentEl.createDiv();
+		footer.style.textAlign = 'right';
+		footer.style.display = 'flex';
+		footer.style.justifyContent = 'flex-end';
+		footer.style.gap = '10px';
+
+		this.cancelBtn = footer.createEl('button', { text: '취소' });
+		this.cancelBtn.addEventListener('click', () => {
+			this.isCancelled = true;
+			this.cancelBtn.disabled = true;
+			this.cancelBtn.textContent = '취소됨...';
+		});
+
+		this.closeBtn = footer.createEl('button', { text: '닫기' });
+		this.closeBtn.disabled = true;
+		this.closeBtn.addEventListener('click', () => this.close());
+	}
+
+	setFileLoading(filePath: string) {
+		const el = this.statusEls.get(filePath);
+		if (el) {
+			el.empty();
+			el.createDiv({ cls: 'convert-spinner' });
+		}
+	}
+
+	setFileSuccess(filePath: string) {
+		const el = this.statusEls.get(filePath);
+		if (el) {
+			el.empty();
+			el.createEl('span', { text: '✅' });
+		}
+	}
+
+	setFileError(filePath: string) {
+		const el = this.statusEls.get(filePath);
+		if (el) {
+			el.empty();
+			el.createEl('span', { text: '❌' });
+		}
+	}
+
+	updateSummary(done: number) {
+		this.summaryEl.setText(`${done} / ${this.files.length} 완료`);
+	}
+
+	enableClose() {
+		this.closeBtn.disabled = false;
+	}
+
+	// 브라우저가 화면을 그릴 때까지 대기
+	waitForRender(): Promise<void> {
+		return new Promise(resolve => {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => resolve());
+			});
+		});
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }
 
@@ -1602,15 +1876,17 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 
 	// 4. 새 파일/폴더 이름 생성 베이스
 	const basePath = file.path.replace(new RegExp(`\\.${file.extension}$`), '');
-	let newPath = `${basePath}.md`;
-	let mediaPath = `${basePath}_media`;
-	let counter = 1;
+	const newPath = `${basePath}.md`;
+	const mediaPath = `${basePath}_media`;
 
-	// 이미 같은 이름의 파일이 있으면 숫자를 붙임
-	while (app.vault.getAbstractFileByPath(newPath)) {
-		newPath = `${basePath} (${counter}).md`;
-		mediaPath = `${basePath} (${counter})_media`;
-		counter++;
+	// 기존 파일이 있으면 삭제 (덮어쓰기)
+	const existingMd = app.vault.getAbstractFileByPath(newPath);
+	if (existingMd) {
+		await app.vault.delete(existingMd);
+	}
+	const existingMedia = app.vault.getAbstractFileByPath(mediaPath);
+	if (existingMedia) {
+		await app.vault.delete(existingMedia, true);
 	}
 
 	let finalMarkdown = '';
@@ -1702,7 +1978,7 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 
 			// 최신 스케일 유지 (사용자가 3으로 조정함)
 			const canvas = await html2canvas(phantom, {
-				scale: 3,
+				scale: 2,
 				useCORS: true,
 				backgroundColor: '#ffffff',
 				logging: false
@@ -1844,6 +2120,6 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 		}
 	}
 
-	// 5. 마크다운 파일 생성
+	// 5. 마크다운 파일 생성 (덮어쓰기)
 	await app.vault.create(newPath, finalMarkdown.trim());
 }

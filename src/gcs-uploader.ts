@@ -133,7 +133,9 @@ export async function uploadFilesToGcs(
     serviceAccountKeyJson: string,
     gcsPrefix: string,
     basePathToRemove: string = '',
-    flatUpload: boolean = false
+    flatUpload: boolean = false,
+    onProgress?: (file: TFile, status: 'loading' | 'success' | 'error', done: number, total: number) => void,
+    isCancelled?: () => boolean
 ): Promise<{ success: number; failed: number; errors: string[] }> {
     // Parse service account key
     let serviceAccount: ServiceAccountKey;
@@ -160,6 +162,12 @@ export async function uploadFilesToGcs(
     const result = { success: 0, failed: 0, errors: [] as string[] };
 
     for (const file of files) {
+        if (isCancelled && isCancelled()) {
+            new Notice(`🛑 업로드가 취소되었습니다.`);
+            break;
+        }
+
+        if (onProgress) onProgress(file, 'loading', result.success + result.failed, files.length);
         try {
             const content = await app.vault.readBinary(file);
 
@@ -184,12 +192,12 @@ export async function uploadFilesToGcs(
 
             await uploadFileToGcs(accessToken, bucket, gcsPath, content, mimeType);
             result.success++;
-            new Notice(`✅ (${result.success}/${files.length}) ${file.name}`);
+            if (onProgress) onProgress(file, 'success', result.success + result.failed, files.length);
         } catch (e) {
             result.failed++;
             const errorMsg = e instanceof Error ? e.message : String(e);
             result.errors.push(`${file.name}: ${errorMsg}`);
-            new Notice(`❌ ${file.name} 업로드 실패`);
+            if (onProgress) onProgress(file, 'error', result.success + result.failed, files.length);
             console.error('GCS Upload Error:', errorMsg);
         }
     }
