@@ -232,7 +232,7 @@ export default class MyPlugin extends Plugin {
 		// 제목 변경
 		progressModal.onOpen = function () {
 			const { contentEl } = this;
-			contentEl.createEl('h2', { text: '📡 RAG Agent 업로드 진행 중' });
+			contentEl.createEl('h2', { text: '📡 RAG Agent 업로드 진행 현황' });
 
 			if (!document.getElementById('convert-spinner-style')) {
 				const styleEl = document.createElement('style');
@@ -743,7 +743,7 @@ class ConversionProgressModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
-		contentEl.createEl('h2', { text: '🔄 MarkDown 변환 진행 중' });
+		contentEl.createEl('h2', { text: '🔄 MarkDown 변환 진행 현황' });
 
 		// CSS 스피너 애니메이션을 document.head에 추가
 		if (!document.getElementById('convert-spinner-style')) {
