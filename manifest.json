@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-chanmin-plugin",
 	"name": "LGE D2C RAG Agent File Uploader",
-	"version": "1.2.0",
+	"version": "1.3.0",
 	"minAppVersion": "0.15.0",
 	"description": "LGE D2C RAG Agent에 파일을 전송합니다.",
 	"author": "Chanmin Park",

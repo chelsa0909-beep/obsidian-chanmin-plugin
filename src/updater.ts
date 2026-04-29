@@ -42,27 +42,37 @@ function compareSemVer(a: string, b: string): number {
 
 /**
  * GitLab 또는 GitHub API를 통해 원격 파일의 Raw 내용을 가져옵니다.
+ * @param version GitHub Release 등에서 특정 버전의 빌드 파일을 받을 때 사용
  */
-async function fetchRawFile(config: UpdateConfig, filePath: string): Promise<string> {
+async function fetchRawFile(config: UpdateConfig, filePath: string, version?: string): Promise<string> {
 	let url = '';
 	let headers: Record<string, string> = {};
 
 	const baseUrl = config.gitlabUrl.replace(/\/+$/, '');
 
 	if (baseUrl.includes('github.com')) {
-		// GitHub 처리 (raw.githubusercontent.com 사용 - 403 Rate Limit 방지)
+		// GitHub 처리
 		const match = baseUrl.match(/github\.com\/([^\/]+\/[^\/]+)/);
 		const repoFullName = match?.[1] ? match[1].replace(/\/$/, '') : '';
 		if (!repoFullName) throw new Error('GitHub 저장소 경로를 파싱할 수 없습니다.');
 
-		url = `https://raw.githubusercontent.com/${repoFullName}/${config.branch}/${filePath}`;
-		
-		if (config.accessToken) {
-			headers['Authorization'] = `Bearer ${config.accessToken}`;
+		if (version && (filePath === 'main.js' || filePath === 'styles.css')) {
+			// GitHub Release에서 다운로드 (빌드 아티팩트)
+			// 참고: S3 리디렉션 시 Authorization 헤더가 있으면 오류가 발생할 수 있으므로 헤더 생략
+			url = `https://github.com/${repoFullName}/releases/download/${version}/${filePath}`;
+		} else {
+			// raw.githubusercontent.com 사용 (manifest.json 등 소스코드 기반 파일)
+			url = `https://raw.githubusercontent.com/${repoFullName}/${config.branch}/${filePath}`;
+			
+			if (config.accessToken) {
+				headers['Authorization'] = `Bearer ${config.accessToken}`;
+			}
 		}
 	} else {
 		// GitLab API 처리
 		const encodedPath = encodeURIComponent(filePath);
+		
+		// GitLab의 경우 현재 raw endpoint를 사용 (추후 GitLab Packages API로 변경 가능)
 		url = `${baseUrl}/api/v4/projects/${config.projectId}/repository/files/${encodedPath}/raw?ref=${config.branch}`;
 		
 		if (config.accessToken) {
@@ -116,7 +126,7 @@ export async function checkForPluginUpdate(plugin: Plugin, config: UpdateConfig)
  * 실제 업데이트를 수행합니다.
  * GitLab에서 main.js, manifest.json, styles.css를 다운로드하여 플러그인 폴더에 덮어씁니다.
  */
-async function performUpdate(plugin: Plugin, config: UpdateConfig): Promise<void> {
+async function performUpdate(plugin: Plugin, config: UpdateConfig, remoteVersion: string): Promise<void> {
 	const pluginDir = plugin.manifest.dir;
 	if (!pluginDir) {
 		throw new Error('플러그인 디렉토리를 찾을 수 없습니다.');
@@ -127,7 +137,7 @@ async function performUpdate(plugin: Plugin, config: UpdateConfig): Promise<void
 
 	for (const fileName of filesToUpdate) {
 		try {
-			const content = await fetchRawFile(config, fileName);
+			const content = await fetchRawFile(config, fileName, remoteVersion);
 			const filePath = normalizePath(`${pluginDir}/${fileName}`);
 			await plugin.app.vault.adapter.write(filePath, content);
 			updatedCount++;
@@ -217,7 +227,7 @@ class UpdateConfirmModal extends Modal {
 			updateBtn.textContent = '⏳ 다운로드 중...';
 
 			try {
-				await performUpdate(this.plugin, this.config);
+				await performUpdate(this.plugin, this.config, this.remoteVersion);
 				this.close();
 				new Notice('✅ 업데이트가 완료되었습니다! Ctrl+R로 옵시디언을 새로고침해 주세요.', 10000);
 			} catch (e) {
