@@ -12,6 +12,7 @@ export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
 
 	async onload() {
+		console.log(`Loading plugin ${this.manifest.name} v${this.manifest.version}`);
 		await this.loadSettings();
 
 		// GCS 업로드 리본 아이콘 (사용자 요청으로 제거)
