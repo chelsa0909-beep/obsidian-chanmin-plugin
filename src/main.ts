@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Plugin, TFile, TFolder, Setting, moment } from 'obsidian';
 import { DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab } from "./settings";
 import { getUploadableFilesInFolder, uploadFilesToGcs, listGcsFolders } from "./gcs-uploader";
+import { checkForPluginUpdate } from "./updater";
 import { parseOffice } from 'officeparser';
 import * as kuromoji from 'kuromoji-ko';
 import nlp from 'compromise';
@@ -14,6 +15,14 @@ export default class MyPlugin extends Plugin {
 	async onload() {
 		console.log(`Loading plugin ${this.manifest.name} v${this.manifest.version}`);
 		await this.loadSettings();
+
+		// GitLab 자체 업데이트 체크 (백그라운드, 비동기)
+		checkForPluginUpdate(this, {
+			gitlabUrl: this.settings.gitlabUrl,
+			projectId: this.settings.gitlabProjectId,
+			accessToken: this.settings.gitlabAccessToken,
+			branch: this.settings.gitlabBranch,
+		});
 
 		// GCS 업로드 리본 아이콘 (사용자 요청으로 제거)
 		/*

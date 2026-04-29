@@ -13,7 +13,7 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = (process.argv[2] === "production");
 
-const outfile = "C:\\Users\\chanmin.park\\OneDrive - LG전자\\문서\\Obsidian Vault\\.obsidian\\plugins\\obsidian-chanmin-plugin\\main.js";
+const outfile = "C:\\Users\\chanmin.park\\OneDrive - LG전자\\.obsidian\\plugins\\obsidian-chanmin-plugin\\main.js";
 const outdir = path.dirname(outfile);
 
 const context = await esbuild.context({
