@@ -16,13 +16,16 @@ export default class MyPlugin extends Plugin {
 		console.log(`Loading plugin ${this.manifest.name} v${this.manifest.version}`);
 		await this.loadSettings();
 
-		// GitLab 자체 업데이트 체크 (백그라운드, 비동기)
+		// GitLab 자체 업데이트 체크 (로딩 시 한 번 실행)
 		checkForPluginUpdate(this, {
 			gitlabUrl: this.settings.gitlabUrl,
 			projectId: this.settings.gitlabProjectId,
 			accessToken: this.settings.gitlabAccessToken,
 			branch: this.settings.gitlabBranch,
 		});
+
+		// 매일 아침 9시에 업데이트 체크 스케줄링
+		this.scheduleDailyUpdateCheck();
 
 		// GCS 업로드 리본 아이콘 (사용자 요청으로 제거)
 		/*
@@ -675,6 +678,34 @@ export default class MyPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	private scheduleDailyUpdateCheck() {
+		const now = new Date();
+		const next9AM = new Date();
+		next9AM.setHours(9, 0, 0, 0);
+
+		// 이미 오늘 오전 9시가 지났다면 내일 오전 9시로 설정
+		if (now.getTime() >= next9AM.getTime()) {
+			next9AM.setDate(next9AM.getDate() + 1);
+		}
+
+		const delay = next9AM.getTime() - now.getTime();
+		console.log(`[Updater] 다음 업데이트 체크까지 남은 시간: ${Math.round(delay / 1000 / 60)}분`);
+
+		const timeoutId = window.setTimeout(() => {
+			checkForPluginUpdate(this, {
+				gitlabUrl: this.settings.gitlabUrl,
+				projectId: this.settings.gitlabProjectId,
+				accessToken: this.settings.gitlabAccessToken,
+				branch: this.settings.gitlabBranch,
+			});
+
+			// 실행 후 다음 날 9시를 위해 다시 스케줄링
+			this.scheduleDailyUpdateCheck();
+		}, delay);
+
+		this.registerInterval(timeoutId);
 	}
 }
 

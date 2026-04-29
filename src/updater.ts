@@ -45,46 +45,61 @@ function compareSemVer(a: string, b: string): number {
  * @param version GitHub Release 등에서 특정 버전의 빌드 파일을 받을 때 사용
  */
 async function fetchRawFile(config: UpdateConfig, filePath: string, version?: string): Promise<string> {
-	let url = '';
-	let headers: Record<string, string> = {};
-
 	const baseUrl = config.gitlabUrl.replace(/\/+$/, '');
 
 	if (baseUrl.includes('github.com')) {
-		// GitHub 처리
-		const match = baseUrl.match(/github\.com\/([^\/]+\/[^\/]+)/);
-		const repoFullName = match?.[1] ? match[1].replace(/\/$/, '') : '';
-		if (!repoFullName) throw new Error('GitHub 저장소 경로를 파싱할 수 없습니다.');
-
-		if (version && (filePath === 'main.js' || filePath === 'styles.css')) {
-			// GitHub Release에서 다운로드 (빌드 아티팩트)
-			// 참고: S3 리디렉션 시 Authorization 헤더가 있으면 오류가 발생할 수 있으므로 헤더 생략
-			url = `https://github.com/${repoFullName}/releases/download/${version}/${filePath}`;
-		} else {
-			// raw.githubusercontent.com 사용 (manifest.json 등 소스코드 기반 파일)
-			url = `https://raw.githubusercontent.com/${repoFullName}/${config.branch}/${filePath}`;
-			
-			if (config.accessToken) {
-				headers['Authorization'] = `Bearer ${config.accessToken}`;
-			}
-		}
+		return fetchGitHubFile(config, baseUrl, filePath, version);
 	} else {
-		// GitLab API 처리
-		const encodedPath = encodeURIComponent(filePath);
-		
-		// GitLab의 경우 현재 raw endpoint를 사용 (추후 GitLab Packages API로 변경 가능)
-		url = `${baseUrl}/api/v4/projects/${config.projectId}/repository/files/${encodedPath}/raw?ref=${config.branch}`;
-		
-		if (config.accessToken) {
-			headers['PRIVATE-TOKEN'] = config.accessToken;
+		return fetchGitLabFile(config, baseUrl, filePath);
+	}
+}
+
+/**
+ * GitHub에서 파일을 가져옵니다.
+ * Release 다운로드 실패 시 raw branch에서 fallback 다운로드를 시도합니다.
+ */
+async function fetchGitHubFile(config: UpdateConfig, baseUrl: string, filePath: string, version?: string): Promise<string> {
+	const match = baseUrl.match(/github\.com\/([^\/]+\/[^\/]+)/);
+	const repoFullName = match?.[1] ? match[1].replace(/\/$/, '') : '';
+	if (!repoFullName) throw new Error('GitHub 저장소 경로를 파싱할 수 없습니다.');
+
+	const headers: Record<string, string> = {};
+	if (config.accessToken) {
+		headers['Authorization'] = `Bearer ${config.accessToken}`;
+	}
+
+	// Release에서 다운로드 시도 (main.js, styles.css 빌드 아티팩트)
+	if (version && (filePath === 'main.js' || filePath === 'styles.css')) {
+		const releaseUrl = `https://github.com/${repoFullName}/releases/download/${version}/${filePath}`;
+		try {
+			// Release 다운로드 시 Authorization 헤더 생략 (S3 리디렉션 문제 방지)
+			const response = await requestUrl({ url: releaseUrl });
+			console.log(`[Updater] ${filePath}: GitHub Release에서 다운로드 성공`);
+			return response.text;
+		} catch (e) {
+			console.log(`[Updater] ${filePath}: GitHub Release에서 다운로드 실패, raw branch에서 시도합니다.`);
 		}
 	}
 
-	const response = await requestUrl({
-		url,
-		headers,
-	});
+	// raw branch에서 다운로드 (fallback 또는 manifest.json 등)
+	const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/${config.branch}/${filePath}`;
+	const response = await requestUrl({ url: rawUrl, headers });
+	return response.text;
+}
 
+/**
+ * GitLab API를 통해 파일을 가져옵니다.
+ */
+async function fetchGitLabFile(config: UpdateConfig, baseUrl: string, filePath: string): Promise<string> {
+	const encodedPath = encodeURIComponent(filePath);
+	const url = `${baseUrl}/api/v4/projects/${config.projectId}/repository/files/${encodedPath}/raw?ref=${config.branch}`;
+
+	const headers: Record<string, string> = {};
+	if (config.accessToken) {
+		headers['PRIVATE-TOKEN'] = config.accessToken;
+	}
+
+	const response = await requestUrl({ url, headers });
 	return response.text;
 }
 
@@ -204,7 +219,7 @@ class UpdateConfirmModal extends Modal {
 		newVersionEl.style.fontWeight = 'bold';
 
 		contentEl.createEl('p', {
-			text: '⚠️ 업데이트 후 옵시디언을 새로고침(Ctrl+R)해야 적용됩니다.',
+			text: 'ℹ️ 업데이트 후 옵시디언이 자동으로 새로고침됩니다.',
 			cls: 'setting-item-description',
 		});
 
@@ -229,7 +244,11 @@ class UpdateConfirmModal extends Modal {
 			try {
 				await performUpdate(this.plugin, this.config, this.remoteVersion);
 				this.close();
-				new Notice('✅ 업데이트가 완료되었습니다! Ctrl+R로 옵시디언을 새로고침해 주세요.', 10000);
+				new Notice('✅ 업데이트가 완료되었습니다! 옵시디언을 새로고침합니다...', 3000);
+				// 파일 쓰기 완료 후 잠시 대기 후 자동 리로드
+				window.setTimeout(() => {
+					(this.app as any).commands.executeCommandById('app:reload');
+				}, 1500);
 			} catch (e) {
 				updateBtn.disabled = false;
 				cancelBtn.disabled = false;
