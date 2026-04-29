@@ -4,7 +4,7 @@ import { App, Modal, Notice, Plugin, requestUrl, normalizePath } from 'obsidian'
  * GitLab 기반 플러그인 자체 업데이트 모듈
  *
  * 동작 흐름:
- * 1. 플러그인 로드 시 GitLab API를 통해 원격 manifest.json을 가져옴
+ * 1. 플러그인 로드 시 GitLab/GitHub API를 통해 원격 manifest.json을 가져옴
  * 2. 로컬 manifest.version과 비교
  * 3. 원격 버전이 높으면 업데이트 알림 모달 표시
  * 4. 사용자 수락 시 main.js, manifest.json, styles.css를 다운로드하여 덮어쓰기
@@ -41,17 +41,38 @@ function compareSemVer(a: string, b: string): number {
 }
 
 /**
- * GitLab API를 통해 원격 파일의 Raw 내용을 가져옵니다.
+ * GitLab 또는 GitHub API를 통해 원격 파일의 Raw 내용을 가져옵니다.
  */
 async function fetchRawFile(config: UpdateConfig, filePath: string): Promise<string> {
-	const encodedPath = encodeURIComponent(filePath);
-	const url = `${config.gitlabUrl}/api/v4/projects/${config.projectId}/repository/files/${encodedPath}/raw?ref=${config.branch}`;
+	let url = '';
+	let headers: Record<string, string> = {};
+
+	const baseUrl = config.gitlabUrl.replace(/\/+$/, '');
+
+	if (baseUrl.includes('github.com')) {
+		// GitHub 처리 (raw.githubusercontent.com 사용 - 403 Rate Limit 방지)
+		const match = baseUrl.match(/github\.com\/([^\/]+\/[^\/]+)/);
+		const repoFullName = match?.[1] ? match[1].replace(/\/$/, '') : '';
+		if (!repoFullName) throw new Error('GitHub 저장소 경로를 파싱할 수 없습니다.');
+
+		url = `https://raw.githubusercontent.com/${repoFullName}/${config.branch}/${filePath}`;
+		
+		if (config.accessToken) {
+			headers['Authorization'] = `Bearer ${config.accessToken}`;
+		}
+	} else {
+		// GitLab API 처리
+		const encodedPath = encodeURIComponent(filePath);
+		url = `${baseUrl}/api/v4/projects/${config.projectId}/repository/files/${encodedPath}/raw?ref=${config.branch}`;
+		
+		if (config.accessToken) {
+			headers['PRIVATE-TOKEN'] = config.accessToken;
+		}
+	}
 
 	const response = await requestUrl({
 		url,
-		headers: {
-			'PRIVATE-TOKEN': config.accessToken,
-		},
+		headers,
 	});
 
 	return response.text;
@@ -62,9 +83,9 @@ async function fetchRawFile(config: UpdateConfig, filePath: string): Promise<str
  * 설정이 누락되어 있으면 조용히 스킵합니다.
  */
 export async function checkForPluginUpdate(plugin: Plugin, config: UpdateConfig): Promise<void> {
-	// 설정 미입력 시 조용히 종료
-	if (!config.gitlabUrl || !config.projectId || !config.accessToken) {
-		console.log('[Updater] GitLab 설정이 비어 있어 업데이트 체크를 건너뜁니다.');
+	// 설정 미입력 시 조용히 종료 (URL 필수)
+	if (!config.gitlabUrl) {
+		console.log('[Updater] 저장소 URL 설정이 비어 있어 업데이트 체크를 건너뜁니다.');
 		return;
 	}
 
@@ -155,7 +176,7 @@ class UpdateConfirmModal extends Modal {
 		infoContainer.style.backgroundColor = 'var(--background-secondary)';
 
 		infoContainer.createEl('p', {
-			text: `새로운 버전이 사내 GitLab에서 감지되었습니다.`,
+			text: `새로운 버전이 원격 저장소에서 감지되었습니다.`,
 		});
 
 		const versionTable = infoContainer.createDiv();

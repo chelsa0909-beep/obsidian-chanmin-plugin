@@ -18,10 +18,10 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 	gcsFolder: '',
 	gcsServiceAccountKey: '',
 	gcsTargetPrefix: '',
-	gitlabUrl: '',
+	gitlabUrl: 'https://github.com/chelsa0909-beep/obsidian-chanmin-plugin',
 	gitlabProjectId: '',
 	gitlabAccessToken: '',
-	gitlabBranch: 'main',
+	gitlabBranch: 'master',
 }
 
 export class SampleSettingTab extends PluginSettingTab {
@@ -89,14 +89,14 @@ export class SampleSettingTab extends PluginSettingTab {
 				text.inputEl.style.fontSize = '12px';
 			});
 
-		// ── GitLab 자체 업데이트 설정 ──────────────────────────
-		containerEl.createEl('h2', { text: '플러그인 자동 업데이트 설정 (GitLab)' });
+		// ── 자동 업데이트 설정 ──────────────────────────
+		containerEl.createEl('h2', { text: '플러그인 자동 업데이트 설정 (GitLab / GitHub)' });
 
 		new Setting(containerEl)
-			.setName('GitLab URL')
-			.setDesc('사내 GitLab 서버 주소 (예: https://gitlab.mycompany.com)')
+			.setName('저장소 URL')
+			.setDesc('사내 GitLab 서버 주소 또는 GitHub 저장소 주소')
 			.addText(text => text
-				.setPlaceholder('https://gitlab.mycompany.com')
+				.setPlaceholder('https://github.com/chelsa0909-beep/obsidian-chanmin-plugin')
 				.setValue(this.plugin.settings.gitlabUrl)
 				.onChange(async (value) => {
 					this.plugin.settings.gitlabUrl = value.replace(/\/+$/, ''); // 후행 슬래시 제거
@@ -104,8 +104,8 @@ export class SampleSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('프로젝트 ID')
-			.setDesc('GitLab 프로젝트 ID (프로젝트 설정 페이지에서 확인 가능)')
+			.setName('프로젝트 ID (GitLab 전용)')
+			.setDesc('GitLab 사용 시 프로젝트 ID (GitHub는 빈칸으로 둡니다)')
 			.addText(text => text
 				.setPlaceholder('1234')
 				.setValue(this.plugin.settings.gitlabProjectId)
@@ -115,8 +115,8 @@ export class SampleSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Access Token')
-			.setDesc('GitLab Personal Access Token (read_api 또는 read_repository 권한 필요)')
+			.setName('Access Token (선택)')
+			.setDesc('비공개(Private) 저장소인 경우 PAT(Personal Access Token) 입력')
 			.addText(text => {
 				text
 					.setPlaceholder('glpat-xxxxxxxxxxxxxxxxxxxx')
@@ -135,7 +135,7 @@ export class SampleSettingTab extends PluginSettingTab {
 				.setPlaceholder('main')
 				.setValue(this.plugin.settings.gitlabBranch)
 				.onChange(async (value) => {
-					this.plugin.settings.gitlabBranch = value || 'main';
+					this.plugin.settings.gitlabBranch = value || 'master';
 					await this.plugin.saveSettings();
 				}));
 
