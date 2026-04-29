@@ -3,12 +3,11 @@ import { App, Modal, Notice, Plugin, requestUrl, normalizePath } from 'obsidian'
 /**
  * GitLab/GitHub 기반 플러그인 자체 업데이트 모듈
  *
- * 동작 흐름:
- * 1. GitHub: Releases API로 최신 릴리즈를 조회 (캐시 문제 없음)
- *    GitLab: API로 manifest.json 조회
- * 2. 로컬 manifest.version과 비교
- * 3. 원격 버전이 높으면 업데이트 알림 모달 표시
- * 4. 사용자 수락 시 릴리즈 에셋(main.js, manifest.json, styles.css)을 다운로드하여 덮어쓰기
+ * 동작 흐름 (GitHub):
+ * 1. GitHub Releases API로 최신 릴리즈 조회 (캐시 없음, 에셋 URL 포함)
+ * 2. API 실패 시 (rate limit/릴리즈 없음) raw.githubusercontent.com에서 manifest.json fallback
+ * 3. 로컬 버전과 비교 → 릴리즈 에셋이 있을 때만 업데이트 제안
+ * 4. 사용자 수락 시 릴리즈 에셋(main.js, manifest.json, styles.css) 다운로드
  * 5. 자동으로 옵시디언 새로고침
  */
 
@@ -23,12 +22,6 @@ interface UpdateConfig {
 interface ReleaseAsset {
 	name: string;
 	browser_download_url: string;
-}
-
-/** 업데이트 정보 (GitHub/GitLab 공통) */
-interface UpdateInfo {
-	remoteVersion: string;
-	assets?: ReleaseAsset[];  // GitHub Release 에셋 (GitHub 전용)
 }
 
 /**
@@ -59,33 +52,57 @@ function parseGitHubRepo(url: string): string {
 // ─── GitHub 업데이트 체크 ──────────────────────────────────
 
 /**
- * GitHub Releases API를 사용하여 최신 릴리즈를 확인합니다.
- * CDN 캐시 문제가 없고, 릴리즈 에셋 URL도 함께 가져옵니다.
+ * GitHub에서 최신 버전을 확인합니다.
+ * 1차: Releases API (캐시 없음, 에셋 URL 포함)
+ * 2차: raw.githubusercontent.com에서 manifest.json (fallback)
  */
 async function checkGitHubUpdate(plugin: Plugin, config: UpdateConfig): Promise<void> {
 	const repoFullName = parseGitHubRepo(config.gitlabUrl);
-
-	const headers: Record<string, string> = {
-		'Accept': 'application/vnd.github+json',
-	};
+	const headers: Record<string, string> = {};
 	if (config.accessToken) {
 		headers['Authorization'] = `Bearer ${config.accessToken}`;
 	}
 
-	// GitHub Releases API - 최신 릴리즈 조회
-	const apiUrl = `https://api.github.com/repos/${repoFullName}/releases/latest`;
-	const response = await requestUrl({ url: apiUrl, headers });
-	const release = JSON.parse(response.text);
+	let remoteVersion: string;
+	let assets: ReleaseAsset[] = [];
 
-	// 릴리즈 태그명이 버전 (예: "1.5.0")
-	const remoteVersion = release.tag_name.replace(/^v/, ''); // "v1.5.0" → "1.5.0"
+	// 1차: GitHub Releases API로 최신 릴리즈 확인
+	try {
+		const apiUrl = `https://api.github.com/repos/${repoFullName}/releases/latest`;
+		const response = await requestUrl({
+			url: apiUrl,
+			headers: { ...headers, 'Accept': 'application/vnd.github+json' },
+		});
+		const release = JSON.parse(response.text);
+		remoteVersion = release.tag_name.replace(/^v/, '');
+		assets = release.assets ?? [];
+		console.log(`[Updater] GitHub Release 발견: v${remoteVersion} (에셋 ${assets.length}개)`);
+	} catch (releaseErr) {
+		// Releases API 실패 → fallback으로 manifest.json 확인
+		console.log('[Updater] GitHub Release 조회 실패 (릴리즈 없음 또는 API 제한). manifest.json에서 버전을 확인합니다.');
+		try {
+			const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/${config.branch}/manifest.json`;
+			const response = await requestUrl({ url: rawUrl, headers });
+			const manifest = JSON.parse(response.text);
+			remoteVersion = manifest.version;
+		} catch (manifestErr) {
+			console.warn('[Updater] manifest.json도 가져올 수 없습니다.');
+			return;
+		}
+	}
+
 	const localVersion = plugin.manifest.version;
-	const assets: ReleaseAsset[] = release.assets ?? [];
-
-	console.log(`[Updater] 로컬 버전: v${localVersion}, 원격 릴리즈 버전: v${remoteVersion}`);
+	console.log(`[Updater] 로컬 버전: v${localVersion}, 원격 버전: v${remoteVersion}`);
 
 	if (compareSemVer(remoteVersion, localVersion) > 0) {
-		new UpdateConfirmModal(plugin.app, plugin, config, localVersion, remoteVersion, assets).open();
+		if (assets.length > 0) {
+			// 릴리즈 에셋이 있으면 업데이트 모달 표시
+			new UpdateConfirmModal(plugin.app, plugin, config, localVersion, remoteVersion, assets).open();
+		} else {
+			// 새 버전은 있지만 릴리즈가 없음 → 알림만 표시
+			console.log(`[Updater] 새 버전 v${remoteVersion}이 있지만 GitHub Release가 아직 생성되지 않았습니다.`);
+			new Notice(`🔄 새 플러그인 버전(v${remoteVersion})이 감지되었지만, GitHub Release가 아직 없습니다.\n태그를 push하면 자동으로 릴리즈가 생성됩니다.`, 8000);
+		}
 	} else {
 		console.log('[Updater] 최신 버전입니다.');
 	}
@@ -222,8 +239,8 @@ export async function checkForPluginUpdate(plugin: Plugin, config: UpdateConfig)
 			await checkGitLabUpdate(plugin, config);
 		}
 	} catch (e) {
-		// 네트워크 오류, 릴리즈 없음 등은 조용히 로그만 남김
-		console.warn('[Updater] 업데이트 체크 실패:', e);
+		// 네트워크 오류 등은 조용히 로그만 남김
+		console.log('[Updater] 업데이트 체크를 건너뜁니다:', e instanceof Error ? e.message : String(e));
 	}
 }
 
@@ -310,7 +327,7 @@ class UpdateConfirmModal extends Modal {
 				} else if (!isGitHub) {
 					await performGitLabUpdate(this.plugin, this.config);
 				} else {
-					throw new Error('GitHub 릴리즈에 다운로드할 파일이 없습니다. 태그를 push하여 릴리즈를 생성해 주세요.');
+					throw new Error('GitHub 릴리즈에 다운로드할 파일이 없습니다.');
 				}
 
 				this.close();
