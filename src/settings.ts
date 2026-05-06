@@ -11,6 +11,12 @@ export interface MyPluginSettings {
 	gitlabProjectId: string;
 	gitlabAccessToken: string;
 	gitlabBranch: string;
+	// 녹음 설정
+	recordingSaveFolder: string;
+	autoInsertToNote: boolean;
+	// STT (음성→텍스트) 설정
+	geminiApiKey: string;
+	sttEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -22,6 +28,10 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 	gitlabProjectId: '',
 	gitlabAccessToken: '',
 	gitlabBranch: 'master',
+	recordingSaveFolder: 'recordings',
+	autoInsertToNote: true,
+	geminiApiKey: '',
+	sttEnabled: true,
 }
 
 export class SampleSettingTab extends PluginSettingTab {
@@ -153,6 +163,57 @@ export class SampleSettingTab extends PluginSettingTab {
 						accessToken: this.plugin.settings.gitlabAccessToken,
 						branch: this.plugin.settings.gitlabBranch,
 					});
+				}));
+
+		// ── 녹음 설정 ──────────────────────────
+		containerEl.createEl('h2', { text: '녹음 설정' });
+
+		new Setting(containerEl)
+			.setName('녹음 파일 저장 폴더')
+			.setDesc('녹음 파일이 저장될 Vault 내 폴더 경로 (없으면 자동 생성)')
+			.addText(text => text
+				.setPlaceholder('recordings')
+				.setValue(this.plugin.settings.recordingSaveFolder)
+				.onChange(async (value) => {
+					this.plugin.settings.recordingSaveFolder = value || 'recordings';
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('현재 노트에 자동 삽입')
+			.setDesc('녹음 완료 후 현재 열린 노트에 녹음 파일 링크를 자동 삽입합니다.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoInsertToNote)
+				.onChange(async (value) => {
+					this.plugin.settings.autoInsertToNote = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// ── STT (음성→텍스트) 설정 ──────────────────────────
+		containerEl.createEl('h2', { text: '음성 → 텍스트 변환 (STT) 설정' });
+
+		new Setting(containerEl)
+			.setName('Gemini API 키')
+			.setDesc('녹음 파일을 텍스트로 변환하는 데 사용되는 Google Gemini API 키')
+			.addText(text => {
+				text
+					.setPlaceholder('AIzaSy...')
+					.setValue(this.plugin.settings.geminiApiKey)
+					.onChange(async (value) => {
+						this.plugin.settings.geminiApiKey = value;
+						await this.plugin.saveSettings();
+					});
+				text.inputEl.type = 'password';
+			});
+
+		new Setting(containerEl)
+			.setName('녹음 후 자동 텍스트 변환')
+			.setDesc('녹음 저장 시 자동으로 Gemini API를 통해 음성을 텍스트로 변환합니다.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.sttEnabled)
+				.onChange(async (value) => {
+					this.plugin.settings.sttEnabled = value;
+					await this.plugin.saveSettings();
 				}));
 	}
 }

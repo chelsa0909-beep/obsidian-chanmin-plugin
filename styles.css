@@ -3,6 +3,15 @@
 This CSS file will be included with your plugin, and
 available in the app when your plugin is enabled.
 
-If your plugin does not need CSS, delete this file.
-
 */
+
+/* 녹음 중 리본 아이콘 애니메이션 */
+.side-dock-ribbon-action.recording-active {
+	color: var(--text-error) !important;
+	animation: recording-pulse 1s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}

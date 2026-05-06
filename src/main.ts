@@ -1,7 +1,8 @@
-import { App, Modal, Notice, Plugin, TFile, TFolder, Setting, moment } from 'obsidian';
+import { App, Modal, Notice, Plugin, TFile, TFolder, Setting, moment, MarkdownView } from 'obsidian';
 import { DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab } from "./settings";
 import { getUploadableFilesInFolder, uploadFilesToGcs, listGcsFolders } from "./gcs-uploader";
 import { checkForPluginUpdate } from "./updater";
+import { AudioRecorder } from "./audio-recorder";
 import { parseOffice } from 'officeparser';
 import * as kuromoji from 'kuromoji-ko';
 import nlp from 'compromise';
@@ -11,6 +12,9 @@ import PostalMime from 'postal-mime';
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
+	private audioRecorder: AudioRecorder = new AudioRecorder();
+	private recordingStatusBarEl: HTMLElement | null = null;
+	private ribbonRecordEl: HTMLElement | null = null;
 
 	async onload() {
 		console.log(`Loading plugin ${this.manifest.name} v${this.manifest.version}`);
@@ -38,12 +42,43 @@ export default class MyPlugin extends Plugin {
 		const statusBarItemEl = this.addStatusBarItem();
 		statusBarItemEl.setText('LGE D2C RAG Agent Upload Ready');
 
+		// 녹음 상태바 (별도)
+		this.recordingStatusBarEl = this.addStatusBarItem();
+		this.recordingStatusBarEl.style.display = 'none';
+
+		// 녹음 리본 아이콘
+		this.ribbonRecordEl = this.addRibbonIcon('mic', '음성 녹음', async () => {
+			await this.toggleRecording();
+		});
+
 		// 업로드 커맨드
 		this.addCommand({
 			id: 'upload-to-gcs',
 			name: 'Upload folder to Google Cloud Storage',
 			callback: async () => {
 				await this.runUpload();
+			}
+		});
+
+		// 녹음 시작 커맨드
+		this.addCommand({
+			id: 'start-recording',
+			name: '음성 녹음 시작',
+			callback: async () => {
+				if (!this.audioRecorder.isRecording) {
+					await this.startRecording();
+				}
+			}
+		});
+
+		// 녹음 중지 커맨드
+		this.addCommand({
+			id: 'stop-recording',
+			name: '음성 녹음 중지',
+			callback: async () => {
+				if (this.audioRecorder.isRecording) {
+					await this.stopRecording();
+				}
 			}
 		});
 
@@ -586,6 +621,124 @@ export default class MyPlugin extends Plugin {
 	}
 
 	onunload() {
+		// 녹음 중이면 취소
+		if (this.audioRecorder.isRecording) {
+			this.audioRecorder.cancelRecording();
+		}
+	}
+
+	// ── 녹음 관련 메서드 ──────────────────────────
+
+	async toggleRecording() {
+		if (this.audioRecorder.isRecording) {
+			await this.stopRecording();
+		} else {
+			await this.startRecording();
+		}
+	}
+
+	async startRecording() {
+		try {
+			await this.audioRecorder.startRecording();
+			new Notice('🎙️ 녹음을 시작합니다.');
+
+			// 리본 아이콘 스타일 변경 (녹음 중 표시)
+			if (this.ribbonRecordEl) {
+				this.ribbonRecordEl.addClass('recording-active');
+				this.ribbonRecordEl.ariaLabel = '녹음 중지';
+			}
+
+			// 상태바 표시
+			if (this.recordingStatusBarEl) {
+				this.recordingStatusBarEl.style.display = '';
+				this.recordingStatusBarEl.setText('🔴 녹음 중 00:00');
+				this.recordingStatusBarEl.style.color = 'var(--text-error)';
+				this.recordingStatusBarEl.style.fontWeight = 'bold';
+			}
+
+			// 매 초 상태바 업데이트
+			this.audioRecorder.onTick((seconds) => {
+				if (this.recordingStatusBarEl) {
+					this.recordingStatusBarEl.setText(`🔴 녹음 중 ${this.audioRecorder.formatDuration(seconds)}`);
+				}
+			});
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ 녹음 시작 실패: ${msg}`);
+			console.error('Recording start error:', e);
+		}
+	}
+
+	async stopRecording() {
+		try {
+			const blob = await this.audioRecorder.stopRecording();
+			new Notice('✅ 녹음이 완료되었습니다.');
+
+			// 리본 아이콘 복구
+			if (this.ribbonRecordEl) {
+				this.ribbonRecordEl.removeClass('recording-active');
+				this.ribbonRecordEl.ariaLabel = '음성 녹음';
+			}
+
+			// 상태바 숨김
+			if (this.recordingStatusBarEl) {
+				this.recordingStatusBarEl.style.display = 'none';
+			}
+
+			// 저장 모달 열기
+			new SaveRecordingModal(this.app, this, blob).open();
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ 녹음 중지 실패: ${msg}`);
+			console.error('Recording stop error:', e);
+		}
+	}
+
+	async saveRecordingToVault(blob: Blob, fileName: string): Promise<TFile | null> {
+		const folder = this.settings.recordingSaveFolder || 'recordings';
+
+		// 폴더가 없으면 생성
+		if (!this.app.vault.getAbstractFileByPath(folder)) {
+			try {
+				await this.app.vault.createFolder(folder);
+			} catch (e) { /* 이미 존재 */ }
+		}
+
+		// 확장자 결정
+		const ext = blob.type.includes('webm') ? 'webm' : blob.type.includes('ogg') ? 'ogg' : 'webm';
+		let filePath = `${folder}/${fileName}.${ext}`;
+
+		// 중복 이름 처리
+		let counter = 1;
+		while (this.app.vault.getAbstractFileByPath(filePath)) {
+			filePath = `${folder}/${fileName} (${counter}).${ext}`;
+			counter++;
+		}
+
+		const arrayBuffer = await blob.arrayBuffer();
+		await this.app.vault.createBinary(filePath, arrayBuffer);
+
+		const savedFile = this.app.vault.getAbstractFileByPath(filePath);
+		return savedFile instanceof TFile ? savedFile : null;
+	}
+
+	insertRecordingLink(filePath: string) {
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (activeView) {
+			const editor = activeView.editor;
+			const cursor = editor.getCursor();
+			const linkText = `![[${filePath}]]\n`;
+			editor.replaceRange(linkText, cursor);
+		}
+	}
+
+	insertTextAtCursor(text: string) {
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (activeView) {
+			const editor = activeView.editor;
+			const cursor = editor.getCursor();
+			editor.replaceRange(text, cursor);
+		}
 	}
 
 	async selectConvertAndUpload(folder: TFolder) {
@@ -2163,4 +2316,188 @@ async function convertOfficeFileToMarkdown(app: App, file: TFile) {
 
 	// 5. 마크다운 파일 생성 (덮어쓰기)
 	await app.vault.create(newPath, finalMarkdown.trim());
+}
+
+class SaveRecordingModal extends Modal {
+	plugin: MyPlugin;
+	blob: Blob;
+	inputEl: HTMLInputElement;
+
+	constructor(app: App, plugin: MyPlugin, blob: Blob) {
+		super(app);
+		this.plugin = plugin;
+		this.blob = blob;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+
+		contentEl.createEl('h2', { text: '🎙️ 녹음 파일 저장' });
+
+		const sizeKb = (this.blob.size / 1024).toFixed(1);
+		contentEl.createEl('p', {
+			text: `녹음 크기: ${sizeKb} KB`,
+			cls: 'setting-item-description'
+		});
+
+		// 미리듣기 플레이어
+		const audioUrl = URL.createObjectURL(this.blob);
+		const audioEl = contentEl.createEl('audio', { attr: { controls: '', src: audioUrl } });
+		audioEl.style.width = '100%';
+		audioEl.style.marginBottom = '15px';
+
+		// 파일명 입력
+		const inputContainer = contentEl.createDiv();
+		inputContainer.style.marginBottom = '15px';
+
+		const label = inputContainer.createEl('label', { text: '파일명' });
+		label.style.display = 'block';
+		label.style.marginBottom = '5px';
+		label.style.fontWeight = 'bold';
+
+		const defaultName = `recording_${moment().format('YYYYMMDD_HHmmss')}`;
+		this.inputEl = inputContainer.createEl('input', {
+			type: 'text',
+			value: defaultName,
+			placeholder: '파일명을 입력하세요'
+		});
+		this.inputEl.style.width = '100%';
+
+		// 저장 폴더 표시
+		const folderInfo = contentEl.createEl('p', {
+			text: `📁 저장 위치: ${this.plugin.settings.recordingSaveFolder || 'recordings'}`,
+			cls: 'setting-item-description'
+		});
+		folderInfo.style.marginBottom = '15px';
+
+		// 자동 삽입 체크박스
+		const autoInsertSetting = new Setting(contentEl)
+			.setName('현재 노트에 삽입')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoInsertToNote)
+			);
+		const autoInsertToggle = autoInsertSetting.controlEl.querySelector('.checkbox') as HTMLElement | null;
+
+		// 버튼
+		const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+		buttonContainer.style.display = 'flex';
+		buttonContainer.style.justifyContent = 'flex-end';
+		buttonContainer.style.gap = '10px';
+
+		const saveButton = buttonContainer.createEl('button', {
+			text: '저장',
+			cls: 'mod-cta'
+		});
+
+		const cancelButton = buttonContainer.createEl('button', {
+			text: '취소'
+		});
+
+		// 엔터키 지원
+		this.inputEl.addEventListener('keydown', async (e) => {
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				await this.saveRecording(autoInsertSetting);
+			}
+		});
+
+		saveButton.addEventListener('click', async () => {
+			await this.saveRecording(autoInsertSetting);
+		});
+
+		cancelButton.addEventListener('click', () => {
+			URL.revokeObjectURL(audioUrl);
+			this.close();
+		});
+
+		// 모달 열릴 때 파일명 전체 선택
+		setTimeout(() => {
+			this.inputEl.focus();
+			this.inputEl.select();
+		}, 50);
+	}
+
+	async saveRecording(autoInsertSetting: Setting) {
+		const fileName = this.inputEl.value.trim();
+		if (!fileName) {
+			new Notice('⚠️ 파일명을 입력해주세요.');
+			return;
+		}
+
+		this.close();
+
+		try {
+			const savedFile = await this.plugin.saveRecordingToVault(this.blob, fileName);
+			if (savedFile) {
+				new Notice(`✅ 녹음 파일 저장 완료: ${savedFile.path}`);
+
+				// 자동 삽입 체크 확인
+				const toggleEl = autoInsertSetting.controlEl.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+				const shouldInsert = toggleEl ? toggleEl.checked : this.plugin.settings.autoInsertToNote;
+
+				if (shouldInsert) {
+					this.plugin.insertRecordingLink(savedFile.path);
+				}
+
+				// STT 변환 실행
+				if (this.plugin.settings.sttEnabled && this.plugin.settings.geminiApiKey) {
+					await this.runStt(savedFile, shouldInsert);
+				}
+			}
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ 녹음 파일 저장 실패: ${msg}`);
+			console.error('Save recording error:', e);
+		}
+	}
+
+	async runStt(savedFile: TFile, shouldInsert: boolean) {
+		const sttNotice = new Notice('🔄 음성을 텍스트로 변환 중...', 0);
+		try {
+			const { transcribeAudio } = await import('./stt-service');
+			const transcribedText = await transcribeAudio(
+				this.plugin.settings.geminiApiKey,
+				this.blob
+			);
+
+			sttNotice.hide();
+
+			if (!transcribedText) {
+				new Notice('⚠️ 변환된 텍스트가 없습니다.');
+				return;
+			}
+
+			new Notice('✅ 음성 → 텍스트 변환 완료!');
+
+			if (shouldInsert) {
+				// 현재 노트에 변환 텍스트 삽입
+				this.plugin.insertTextAtCursor(`\n> [!quote] 🎙️ 음성 변환 텍스트\n> ${transcribedText.replace(/\n/g, '\n> ')}\n`);
+			} else {
+				// 노트에 삽입하지 않는 경우, 별도 MD 파일로 저장
+				const mdPath = savedFile.path.replace(/\.[^.]+$/, '.md');
+				const mdContent = `---\nsource: "[[${savedFile.path}]]"\ntype: stt-transcription\ndate: ${moment().format('YYYY-MM-DD HH:mm:ss')}\n---\n\n# 🎙️ 음성 변환 텍스트\n\n${transcribedText}\n`;
+				
+				try {
+					await this.app.vault.create(mdPath, mdContent);
+					new Notice(`📝 변환 텍스트 저장: ${mdPath}`);
+				} catch (e) {
+					// 파일이 이미 존재하면 내용 추가
+					const existingFile = this.app.vault.getAbstractFileByPath(mdPath);
+					if (existingFile instanceof TFile) {
+						const existing = await this.app.vault.read(existingFile);
+						await this.app.vault.modify(existingFile, existing + `\n\n${transcribedText}`);
+					}
+				}
+			}
+		} catch (e) {
+			sttNotice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`❌ 음성 변환 실패: ${msg}`);
+			console.error('STT error:', e);
+		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
 }
